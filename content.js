@@ -354,9 +354,22 @@
     for (const g of groups) request(g, target, myGen, eng);
   }
 
-  function request(texts, target, myGen, engine) {
+  // Après un saut dans la vidéo : les répliques de la nouvelle scène passent devant tout le reste.
+  let urgentTimer = null;
+  function urgentNear() {
+    clearTimeout(urgentTimer);
+    urgentTimer = setTimeout(() => {
+      const eng = wantEngine();
+      if (!CONTEXT_ENGINES.includes(eng) || !video || !cues.length) return;
+      const t = video.currentTime;
+      const near = [...new Set(cues.filter((c) => c.end >= t).slice(0, 8).map((c) => c.text))].filter((s) => !trCache.has(ck(settings.target, eng, s)));
+      if (near.length) request(near, settings.target, gen, eng, true);
+    }, 400);
+  }
+
+  function request(texts, target, myGen, engine, urgent) {
     if (!texts.length) return;
-    const msg = { type: 'translate', texts, target, engine, page: PAGE_ID + ':' + myGen };
+    const msg = { type: 'translate', texts, target, engine, page: PAGE_ID + ':' + myGen, urgent: !!urgent };
     if (CONTEXT_ENGINES.includes(engine)) msg.context = ctxFor(texts);
     sendMsg(msg, (res) => {
       // petit diagnostic lisible depuis la page (aucune donnée personnelle)
@@ -804,6 +817,7 @@
       if (v && !v.__stfrEv) {
         v.__stfrEv = true;
         for (const ev of ['seeked', 'timeupdate', 'play', 'ratechange']) v.addEventListener(ev, () => v === video && render());
+        v.addEventListener('seeked', () => v === video && urgentNear());
       }
     }
     render();

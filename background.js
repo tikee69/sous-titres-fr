@@ -43,6 +43,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   const where = sender && sender.tab ? sender.tab.id + '/' + (sender.frameId || 0) : null;
   if (where && msg.page) latestPage.set(where, msg.page);
   msg.alive = () => !where || !msg.page || latestPage.get(where) === msg.page;
+  msg.seq = ++msgSeq;
+  if (msg.urgent) msg.seq -= 1e9; // scène où l'on vient de sauter : avant tout le reste
   handle(msg)
     .then((res) => sendResponse({ ...res, warn: lastWarn }))
     .catch((e) => sendResponse({ ok: false, error: String(e) }));
@@ -75,7 +77,7 @@ async function handle(msg) {
 
   if (msg.engine === 'ollama') {
     try {
-      const result = await ollamaBatch(msg.texts, target, context, cfg, msg.alive);
+      const result = await ollamaBatch(msg.texts, target, context, cfg, msg.alive, msg.seq);
       await warn(null);
       return { ok: true, engine: 'ollama', result };
     } catch (e) {
@@ -458,7 +460,30 @@ async function msFirstBatch(texts, target) {
 // Un vrai modèle de langage qui tourne sur ce Mac (par défaut qwen3:8b). Il traduit par scène :
 // 30 répliques numérotées à la fois, avec les 5 précédentes comme contexte, le contexte de l'œuvre
 // et le glossaire. Rien ne sort de l'ordinateur. Une seule demande à la fois (le Mac travaille).
-const ollamaSlot = makeLimiter(1);
+// File à priorité : un paquet arrivé plus tôt (la scène en cours) passe entièrement avant les suivants,
+// au lieu que tous les paquets avancent d'une réplique chacun à tour de rôle.
+function makePrioLimiter(max) {
+  let active = 0;
+  const waiting = []; // { prio, resolve }
+  return async (fn, prio = 0) => {
+    if (active >= max) {
+      await new Promise((resolve) => {
+        waiting.push({ prio, resolve });
+        waiting.sort((a, b) => a.prio - b.prio);
+      });
+    }
+    active++;
+    try {
+      return await fn();
+    } finally {
+      active--;
+      const next = waiting.shift();
+      if (next) next.resolve();
+    }
+  };
+}
+const ollamaSlot = makePrioLimiter(1);
+let msgSeq = 0;
 const OLLAMA_CHUNK = 30;
 
 function ollamaError(e, cfg) {
@@ -468,7 +493,7 @@ function ollamaError(e, cfg) {
   return err;
 }
 
-async function ollamaBatch(texts, target, context, cfg, alive = () => true) {
+async function ollamaBatch(texts, target, context, cfg, alive = () => true, prio = 0) {
   const base = (cfg.ollamaUrl || 'http://localhost:11434').replace(/\/+$/, '');
   const model = cfg.ollamaModel || 'hf.co/unsloth/Hy-MT2-7B-GGUF:UD-Q4_K_XL';
   // « L » = traduction réplique par réplique (les anciennes traductions par lot de Hy-MT2 sont ignorées)
@@ -490,7 +515,7 @@ async function ollamaBatch(texts, target, context, cfg, alive = () => true) {
       const after = texts.slice(i + 1, i + 3);
       let v = null;
       try {
-        v = await ollamaSlot(() => (alive() ? hyLine(base, model, texts[i], target, { ...context, before, after }) : 'STOP'));
+        v = await ollamaSlot(() => (alive() ? hyLine(base, model, texts[i], target, { ...context, before, after }) : 'STOP'), prio);
       } catch (e) {
         if (e.connection && done === 0) throw e;
       }
@@ -519,7 +544,7 @@ async function ollamaBatch(texts, target, context, cfg, alive = () => true) {
     let res = null;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        res = await ollamaSlot(() => (alive() ? ollamaCall(base, model, lines, target, { ...context, before }) : null));
+        res = await ollamaSlot(() => (alive() ? ollamaCall(base, model, lines, target, { ...context, before }) : null), prio);
         if (res === null && !alive()) return out; // page fermée ou rechargée : on abandonne
       } catch (e) {
         // Ollama absent ou qui refuse l'extension : inutile d'insister, on bascule tout de suite
