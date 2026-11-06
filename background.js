@@ -7,8 +7,33 @@
 const PARALLEL = 6;
 const cache = new Map();
 
+// =====================================================================  mise à jour automatique
+// Extension chargée « non empaquetée » : quand une nouvelle version est déposée dans le dossier
+// (fichier version.txt modifié), l'extension se recharge toute seule. Rien à faire dans chrome://extensions.
+let lastCheck = 0;
+async function checkUpdate() {
+  if (Date.now() - lastCheck < 5000) return;
+  lastCheck = Date.now();
+  try {
+    const self = await chrome.management.getSelf();
+    if (self.installType !== 'development') return;
+    const r = await fetch(chrome.runtime.getURL('version.txt'), { cache: 'no-store' });
+    const onDisk = (await r.text()).trim();
+    if (!onDisk || onDisk === chrome.runtime.getManifest().version) return;
+    // sécurité anti-boucle : une seule tentative par numéro de version
+    const { reloadedFor } = await chrome.storage.local.get('reloadedFor');
+    if (reloadedFor === onDisk) return;
+    await chrome.storage.local.set({ reloadedFor: onDisk });
+    chrome.runtime.reload();
+  } catch (_) {}
+}
+chrome.alarms.create('stfr-update', { periodInMinutes: 0.5 });
+chrome.alarms.onAlarm.addListener((a) => a.name === 'stfr-update' && checkUpdate());
+checkUpdate();
+
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (!msg || msg.type !== 'translate' || !Array.isArray(msg.texts)) return;
+  checkUpdate();
   handle(msg)
     .then(sendResponse)
     .catch((e) => sendResponse({ ok: false, error: String(e) }));

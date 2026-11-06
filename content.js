@@ -379,6 +379,7 @@
       overlay.className = 'stfr-overlay notranslate';
       // empêche Chrome Traduction / Immersive Translate de retraduire notre affichage
       overlay.setAttribute('translate', 'no');
+      overlay.dataset.version = chrome.runtime.getManifest().version;
     }
     if (overlay.parentElement !== host) host.appendChild(overlay);
     return overlay;
@@ -696,7 +697,17 @@
   }).observe(document.documentElement, { childList: true, subtree: true, characterData: true });
 
   // ---------------------------------------------------------------- entretien (toutes les 0,5 s)
-  setInterval(() => {
+  const tick = setInterval(() => {
+    // l'extension a été rechargée (mise à jour) : cette ancienne copie s'efface, la nouvelle prend le relais
+    if (!chrome.runtime || !chrome.runtime.id) {
+      clearInterval(tick);
+      settings.enabled = false;
+      cues = [];
+      if (overlay) overlay.remove();
+      document.documentElement.classList.remove('stfr-on');
+      document.querySelectorAll('.stfr-native').forEach((e) => e.classList.remove('stfr-native'));
+      return;
+    }
     const v = pickVideo();
     if (v !== video) {
       video = v;
