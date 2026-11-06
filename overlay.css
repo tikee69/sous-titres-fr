@@ -1,0 +1,62 @@
+.stfr-overlay {
+  position: absolute;
+  z-index: 2147483646;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: center;
+  padding-bottom: 6%;
+  box-sizing: border-box;
+  transition: padding-bottom 0.2s ease;
+}
+
+/* YouTube : on remonte quand la barre de contrôle est visible */
+.html5-video-player:not(.ytp-autohide) .stfr-overlay {
+  padding-bottom: max(6%, 62px);
+}
+
+.stfr-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.18em;
+  max-width: 88%;
+}
+
+.stfr-line {
+  background: rgba(8, 8, 8, 0.72);
+  color: #fff;
+  font: 600 var(--stfr-size, 20px) / 1.3 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  padding: 0.08em 0.45em;
+  border-radius: 4px;
+  text-align: center;
+  white-space: pre-wrap;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+}
+
+.stfr-orig {
+  font-size: calc(var(--stfr-size, 20px) * 0.74);
+  font-weight: 500;
+  color: #e8e8e8;
+}
+
+.stfr-tr {
+  color: #fff;
+}
+
+.stfr-pending {
+  opacity: 0.65;
+}
+
+/* On masque les sous-titres d'origine du lecteur : c'est nous qui les affichons */
+.stfr-on .ytp-caption-window-container,
+.stfr-on .vjs-text-track-display,
+.stfr-on .jw-captions,
+.stfr-on .plyr__captions,
+.stfr-on .shaka-text-container,
+.stfr-on .bmpui-ui-subtitle-overlay,
+.stfr-on .player-timedtext,
+.stfr-on .stfr-native {
+  opacity: 0 !important;
+}

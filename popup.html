@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { font: 14px system-ui, sans-serif; width: 280px; margin: 14px; color: #222; }
+    h1 { font-size: 15px; margin: 0 0 12px; }
+    h2 { font-size: 13px; margin: 16px 0 6px; color: #555; }
+    label { display: flex; align-items: center; gap: 8px; margin: 10px 0; }
+    .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 10px 0; }
+    .row select { flex: 0 0 150px; padding: 3px; }
+    input[type=password] { width: 100%; box-sizing: border-box; padding: 5px; font: 12px monospace; }
+    .hint { font-size: 12px; color: #666; margin: 4px 0; line-height: 1.35; }
+    #status { font-size: 12px; color: #b45309; margin-top: 8px; }
+    #claudeBox[hidden] { display: none; }
+    a { color: #2563eb; }
+  </style>
+</head>
+<body>
+  <h1>Sous-titres FR</h1>
+  <label><input type="checkbox" id="enabled"> Activer la traduction</label>
+  <div class="row">Affichage
+    <select id="mode">
+      <option value="bilingual">Bilingue</option>
+      <option value="translation">Traduction seule</option>
+    </select>
+  </div>
+  <div class="row">Langue
+    <select id="target">
+      <option value="fr">Français</option>
+      <option value="en">Anglais</option>
+      <option value="es">Espagnol</option>
+      <option value="de">Allemand</option>
+      <option value="it">Italien</option>
+      <option value="pt">Portugais</option>
+      <option value="ar">Arabe</option>
+      <option value="zh-CN">Chinois</option>
+      <option value="ja">Japonais</option>
+    </select>
+  </div>
+  <div class="row">Taille du texte
+    <select id="size">
+      <option value="0.8">Petite</option>
+      <option value="1">Normale</option>
+      <option value="1.25">Grande</option>
+      <option value="1.5">Très grande</option>
+    </select>
+  </div>
+  <label><input type="checkbox" id="autoCC"> Allumer les sous-titres YouTube automatiquement</label>
+
+  <h2>Traducteur</h2>
+  <div class="row">Moteur
+    <select id="engine">
+      <option value="google">Google (gratuit)</option>
+      <option value="claude">Claude (contexte)</option>
+    </select>
+  </div>
+  <div id="claudeBox" hidden>
+    <div class="row">Modèle
+      <select id="model">
+        <option value="claude-haiku-5-5">Haiku 5.5 (rapide)</option>
+        <option value="claude-sonnet-5-5">Sonnet 5.5 (meilleur)</option>
+      </select>
+    </div>
+    <input type="password" id="apiKey" placeholder="Clé API Claude (sk-ant-…)" autocomplete="off">
+    <p class="hint">Crée ta clé sur <a href="https://console.anthropic.com/settings/keys" target="_blank">console.anthropic.com</a>. Elle reste sur cet ordinateur et sert uniquement à appeler Claude.</p>
+  </div>
+  <div id="status"></div>
+  <script src="popup.js"></script>
+</body>
+</html>
