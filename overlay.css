@@ -6,12 +6,15 @@
   flex-direction: column;
   justify-content: flex-end;
   align-items: center;
-  padding-bottom: 6%;
+  padding-bottom: 11%; /* au-dessus des barres de contrôle des lecteurs */
   box-sizing: border-box;
   transition: padding-bottom 0.2s ease;
 }
 
-/* YouTube : on remonte quand la barre de contrôle est visible */
+/* YouTube : bas de l'image quand les contrôles sont cachés, au-dessus quand ils sont visibles */
+.html5-video-player .stfr-overlay {
+  padding-bottom: 6%;
+}
 .html5-video-player:not(.ytp-autohide) .stfr-overlay {
   padding-bottom: max(6%, 62px);
 }
