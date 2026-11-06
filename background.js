@@ -1,8 +1,10 @@
 // Service worker : traduit des lots de phrases.
-// Deux moteurs :
-//  - "google" : accès gratuit de Google Traduction, quasi instantané ;
-//  - "claude" : API Claude avec ta clé, traduction qui tient compte du contexte (titre, phrases d'avant).
-// Si Claude échoue (pas de clé, clé refusée, réseau…), on bascule automatiquement sur Google.
+// Moteurs :
+//  - "google"    : gratuit (Google Traduction, Microsoft Edge en relais), par défaut ;
+//  - "microsoft" : gratuit (Microsoft Edge d'abord, Google en relais) ;
+//  - "claude"    : API Claude avec ta clé, traduction avec le contexte ;
+//  - "ollama"    : modèle local sur ce Mac (Ollama), avec le contexte, gratuit et privé.
+// Si le moteur choisi échoue, on bascule automatiquement sur les traducteurs gratuits : jamais d'écran vide.
 
 const PARALLEL = 2; // Google : 2 demandes à la fois au maximum
 const cache = new Map();
@@ -43,20 +45,53 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 async function handle(msg) {
   const target = msg.target || 'fr';
   await loadCache();
+  const cfg = await chrome.storage.local.get({
+    apiKey: '', model: 'claude-haiku-5-5',
+    ollamaUrl: 'http://localhost:11434', ollamaModel: 'qwen3:8b',
+    workContext: '', glossary: '',
+  });
+  const context = { ...(msg.context || {}), work: cfg.workContext, glossary: cfg.glossary };
+
   if (msg.engine === 'claude') {
-    const { apiKey, model } = await chrome.storage.local.get({ apiKey: '', model: 'claude-haiku-5-5' });
-    if (apiKey) {
+    if (cfg.apiKey) {
       try {
-        const result = await claudeBatch(msg.texts, target, msg.context || {}, apiKey, model);
+        const result = await claudeBatch(msg.texts, target, context, cfg.apiKey, cfg.model);
+        await warn(null);
         return { ok: true, engine: 'claude', result };
       } catch (e) {
-        await setStatus(String(e.message || e));
+        await warn(String(e.message || e));
       }
     } else {
-      await setStatus('Pas de clé API Claude : traduction Google utilisée.');
+      await warn('Pas de clé API Claude : traduction gratuite utilisée.');
     }
   }
+
+  if (msg.engine === 'ollama') {
+    try {
+      const result = await ollamaBatch(msg.texts, target, context, cfg);
+      await warn(null);
+      return { ok: true, engine: 'ollama', result };
+    } catch (e) {
+      await warn(String(e.message || e) + ' Traduction gratuite utilisée en attendant.');
+    }
+  }
+
+  if (msg.engine === 'microsoft') {
+    const result = await msFirstBatch(msg.texts, target);
+    return { ok: true, engine: 'microsoft', result };
+  }
+
   return { ok: true, engine: 'google', result: await freeBatch(msg.texts, target) };
+}
+
+// Avertissement discret : un « ! » sur l'icône de l'extension, et le message dans son menu.
+async function warn(text) {
+  await setStatus(text);
+  try {
+    await chrome.action.setBadgeText({ text: text ? '!' : '' });
+    if (text) await chrome.action.setBadgeBackgroundColor({ color: '#b45309' });
+    await chrome.action.setTitle({ title: text ? 'Sous-titres FR : ' + text : 'Sous-titres FR' });
+  } catch (_) {}
 }
 
 function setStatus(text) {
@@ -133,7 +168,7 @@ async function claudeBatch(texts, target, context, key, model) {
       // contexte : pour le 1er paquet celui envoyé par la page, pour les suivants la fin du paquet précédent
       const before = n === 0 ? context.before || [] : chunks[n - 1].slice(-4).map((i) => texts[i]);
       try {
-        const res = await claudeSlot(() => claudeCall(lines, target, { title: context.title, before }, key, model));
+        const res = await claudeSlot(() => claudeCall(lines, target, { ...context, before }, key, model));
         res.forEach((v, k) => {
           if (v) {
             out[idx[k]] = v;
@@ -170,6 +205,8 @@ async function claudeCall(lines, target, context, key, model) {
     `- Le titre et les lignes précédentes servent seulement de contexte (sujet, ton, tutoiement ou vouvoiement, vocabulaire récurrent) : ne les traduis pas.\n` +
     `- Réponds uniquement avec les lignes "numéro|traduction", sans aucun autre texte.`;
   let user = '';
+  if (context.work) user += `Œuvre : ${context.work}\n`;
+  if (context.glossary) user += `Glossaire à respecter (terme = traduction imposée) :\n${context.glossary}\n`;
   if (context.title) user += `Titre de la vidéo : ${context.title}\n`;
   if (context.before && context.before.length) user += `Lignes précédentes (contexte) :\n${context.before.join('\n')}\n`;
   user += `\nLignes à traduire :\n` + lines.map((l, i) => `${i + 1}|${l.replace(/[\n|]/g, ' ')}`).join('\n');
@@ -379,4 +416,164 @@ async function freeBatch(texts, target) {
   }
   if (!out.some(Boolean) && texts.length) throw new Error('Traducteurs gratuits indisponibles pour le moment (Google : ' + lastGoogleError + ' / Microsoft : ' + lastMsError + ')');
   return out;
+}
+
+// =====================================================================  Microsoft d'abord
+async function msFirstBatch(texts, target) {
+  await loadCache();
+  const out = new Array(texts.length).fill(null);
+  const todo = [];
+  texts.forEach((t, i) => {
+    const hit = cache.get(`microsoft|${target}|${t}`);
+    if (hit) out[i] = hit;
+    else todo.push(i);
+  });
+  if (todo.length) {
+    const ms = await msBatch(todo.map((i) => texts[i]), target).catch(() => []);
+    todo.forEach((i, k) => {
+      if (ms[k]) {
+        out[i] = ms[k];
+        remember(`microsoft|${target}|${texts[i]}`, ms[k]);
+      }
+    });
+  }
+  const missing = out.map((v, i) => (v ? -1 : i)).filter((i) => i >= 0);
+  if (missing.length) {
+    const g = await freeBatch(missing.map((i) => texts[i]), target);
+    missing.forEach((i, k) => (out[i] = g[k]));
+  }
+  return out;
+}
+
+// =====================================================================  Local : Ollama
+// Un vrai modèle de langage qui tourne sur ce Mac (par défaut qwen3:8b). Il traduit par scène :
+// 30 répliques numérotées à la fois, avec les 5 précédentes comme contexte, le contexte de l'œuvre
+// et le glossaire. Rien ne sort de l'ordinateur. Une seule demande à la fois (le Mac travaille).
+const ollamaSlot = makeLimiter(1);
+const OLLAMA_CHUNK = 30;
+
+function ollamaError(e, cfg) {
+  const m = String((e && e.message) || e);
+  const err = new Error(m);
+  err.connection = true;
+  return err;
+}
+
+async function ollamaBatch(texts, target, context, cfg) {
+  const base = (cfg.ollamaUrl || 'http://localhost:11434').replace(/\/+$/, '');
+  const model = cfg.ollamaModel || 'qwen3:8b';
+  const key = (t) => `ollama|${model}|${target}|${t}`;
+  const out = new Array(texts.length).fill(null);
+  const todo = [];
+  texts.forEach((t, i) => {
+    const hit = cache.get(key(t));
+    if (hit) out[i] = hit;
+    else todo.push(i);
+  });
+
+  const chunks = [];
+  for (let i = 0; i < todo.length; i += OLLAMA_CHUNK) chunks.push(todo.slice(i, i + OLLAMA_CHUNK));
+  let done = 0;
+  for (let n = 0; n < chunks.length; n++) {
+    const idx = chunks[n];
+    const lines = idx.map((i) => texts[i]);
+    const before = n === 0 ? context.before || [] : chunks[n - 1].slice(-5).map((i) => texts[i]);
+    let res = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        res = await ollamaSlot(() => ollamaCall(base, model, lines, target, { ...context, before }));
+      } catch (e) {
+        // Ollama absent ou qui refuse l'extension : inutile d'insister, on bascule tout de suite
+        if (e.connection && done === 0) throw e;
+        res = null;
+      }
+      if (res && res.every(Boolean)) break; // complet : pas besoin de refaire le lot
+    }
+    if (res) {
+      res.forEach((v, k) => {
+        if (v) {
+          out[idx[k]] = v;
+          remember(key(lines[k]), v);
+        }
+      });
+      done++;
+    }
+  }
+
+  // répliques que le modèle local n'a pas rendues -> traducteurs gratuits
+  const missing = out.map((v, i) => (v ? -1 : i)).filter((i) => i >= 0);
+  if (missing.length) {
+    const g = await freeBatch(missing.map((i) => texts[i]), target).catch(() => []);
+    missing.forEach((i, k) => (out[i] = g[k] || null));
+  }
+  return out;
+}
+
+async function ollamaCall(base, model, lines, target, context) {
+  const lang = LANGS[target] || target;
+  const system =
+    `Tu es un traducteur professionnel de sous-titres. Tu traduis en ${lang}.\n` +
+    `Règles :\n` +
+    `- ${lang[0].toUpperCase() + lang.slice(1)} naturel, fidèle au ton et au registre de chaque personnage, concis et lisible comme un sous-titre.\n` +
+    `- Si le texte source est lui-même une traduction maladroite (par exemple de l'anglais traduit du chinois), retrouve le sens d'origine le plus probable, sans rien inventer.\n` +
+    `- Une phrase peut être coupée sur plusieurs répliques qui se suivent : traduis l'ensemble, puis répartis-le sur les mêmes numéros. Ne fusionne jamais deux numéros et n'en saute aucun.\n` +
+    `- Garde les noms propres, les titres et les rangs identiques d'une réplique à l'autre, et respecte strictement le glossaire.\n` +
+    `- Les répliques précédentes servent uniquement de contexte : ne les traduis pas.\n` +
+    `- Réponds UNIQUEMENT avec un objet JSON de la forme {"1": "...", "2": "..."}, avec exactement les numéros reçus, sans aucun autre texte.`;
+  let user = '';
+  if (context.work) user += `Œuvre : ${context.work}\n`;
+  else if (context.title) user += `Titre de la vidéo : ${context.title}\n`;
+  if (context.glossary) user += `Glossaire (terme = traduction imposée) :\n${context.glossary}\n`;
+  if (context.before && context.before.length) user += `Répliques précédentes (contexte, ne pas traduire) :\n${context.before.join('\n')}\n`;
+  const obj = {};
+  lines.forEach((l, i) => (obj[i + 1] = l));
+  user += `\nRépliques à traduire :\n${JSON.stringify(obj, null, 0)}`;
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 180000);
+  let r;
+  try {
+    r = await fetch(base + '/api/chat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      signal: ctrl.signal,
+      body: JSON.stringify({
+        model,
+        stream: false,
+        think: false,
+        format: 'json',
+        options: { temperature: 0.2, num_ctx: 8192 },
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
+        ],
+      }),
+    });
+  } catch (e) {
+    throw ollamaError(new Error('Ollama ne répond pas (pas lancé ?).'));
+  } finally {
+    clearTimeout(timer);
+  }
+  if (r.status === 403) throw ollamaError(new Error('Ollama refuse l\'extension (erreur 403) : OLLAMA_ORIGINS n\'est pas réglé.'));
+  if (r.status === 404) throw ollamaError(new Error(`Modèle « ${model} » non installé dans Ollama (ollama pull ${model}).`));
+  if (!r.ok) throw new Error('Ollama HTTP ' + r.status);
+  const j = await r.json();
+  let text = (j.message && j.message.content) || '';
+  text = text.replace(/<think>[\s\S]*?<\/think>/g, '').replace(/```(?:json)?/g, '');
+  const a = text.indexOf('{');
+  const b = text.lastIndexOf('}');
+  const res = new Array(lines.length).fill(null);
+  if (a < 0 || b <= a) return res;
+  let parsed = {};
+  try {
+    parsed = JSON.parse(text.slice(a, b + 1));
+  } catch (_) {
+    return res;
+  }
+  for (const k in parsed) {
+    const n = parseInt(k, 10);
+    const v = typeof parsed[k] === 'string' ? parsed[k].trim() : '';
+    if (n >= 1 && n <= lines.length && v) res[n - 1] = v;
+  }
+  return res;
 }

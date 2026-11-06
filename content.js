@@ -281,13 +281,15 @@
   // puis la version Claude remplace chaque phrase dès qu'elle arrive.
   let failures = 0;
   const ck = (target, eng, text) => target + '|' + eng + '|' + text;
-  const wantEngine = () => (settings.engine === 'claude' ? 'claude' : 'google');
+  const CONTEXT_ENGINES = ['claude', 'ollama']; // moteurs qui traduisent par scène, avec le contexte
+  const wantEngine = () => (['claude', 'ollama', 'microsoft'].includes(settings.engine) ? settings.engine : 'google');
 
   function bestTr(text) {
     const target = settings.target;
-    if (wantEngine() === 'claude') {
-      const c = trCache.get(ck(target, 'claude', text));
-      if (c) return [c, 'claude'];
+    const eng = wantEngine();
+    if (eng !== 'google') {
+      const c = trCache.get(ck(target, eng, text));
+      if (c) return [c, eng];
     }
     const g = trCache.get(ck(target, 'google', text));
     return g ? [g, 'google'] : [null, null];
@@ -312,7 +314,7 @@
 
   function ctxFor(texts) {
     const idx = cues.findIndex((c) => c.text === texts[0]);
-    return { title: pageTitle(), before: idx > 0 ? cues.slice(Math.max(0, idx - 4), idx).map((c) => c.text) : [] };
+    return { title: pageTitle(), before: idx > 0 ? cues.slice(Math.max(0, idx - 5), idx).map((c) => c.text) : [] };
   }
 
   function translateAll() {
@@ -330,10 +332,11 @@
     const behind = uniq(need.filter((c) => c.end < t)).filter((s) => !ahead.includes(s));
     const groups = [];
     if (ahead.length) groups.push(ahead.slice(0, 6));
-    const size = eng === 'claude' ? 40 : 150;
+    const size = eng === 'ollama' ? 30 : eng === 'claude' ? 40 : 150;
     for (let i = 6; i < ahead.length; i += size) groups.push(ahead.slice(i, i + size));
     for (let i = 0; i < behind.length; i += size) groups.push(behind.slice(i, i + size));
-    if (eng === 'claude') {
+    if (CONTEXT_ENGINES.includes(eng)) {
+      // le moteur avec contexte prend quelques secondes : le gratuit affiche tout de suite les premières répliques
       const fast = ahead.concat(behind).slice(0, 10).filter((s) => !trCache.has(ck(target, 'google', s)));
       request(fast, target, myGen, 'google');
     }
@@ -343,7 +346,7 @@
   function request(texts, target, myGen, engine) {
     if (!texts.length) return;
     const msg = { type: 'translate', texts, target, engine };
-    if (engine === 'claude') msg.context = ctxFor(texts);
+    if (CONTEXT_ENGINES.includes(engine)) msg.context = ctxFor(texts);
     sendMsg(msg, (res) => {
       // petit diagnostic lisible depuis la page (aucune donnée personnelle)
       const d = document.documentElement.dataset;

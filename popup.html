@@ -9,10 +9,19 @@
     label { display: flex; align-items: center; gap: 8px; margin: 10px 0; }
     .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 10px 0; }
     .row select { flex: 0 0 150px; padding: 3px; }
-    input[type=password] { width: 100%; box-sizing: border-box; padding: 5px; font: 12px monospace; }
+    input[type=password], input[type=text], textarea { width: 100%; box-sizing: border-box; padding: 5px; font: 12px system-ui, sans-serif; }
+    input[type=password] { font-family: monospace; }
+    textarea { resize: vertical; min-height: 44px; }
+    .field { margin: 8px 0; }
+    .field span { display: block; font-size: 12px; color: #444; margin-bottom: 3px; }
+    button { font: 13px system-ui, sans-serif; padding: 4px 10px; cursor: pointer; }
+    #ollamaTest { font-size: 12px; margin: 6px 0; line-height: 1.35; }
+    .ok { color: #15803d; } .ko { color: #b91c1c; }
+    details { margin: 6px 0; font-size: 12px; color: #444; } summary { cursor: pointer; }
+    code { font-size: 11px; background: #f1f1f1; padding: 1px 3px; border-radius: 3px; }
     .hint { font-size: 12px; color: #666; margin: 4px 0; line-height: 1.35; }
     #status { font-size: 12px; color: #b45309; margin-top: 8px; }
-    #claudeBox[hidden] { display: none; }
+    [hidden] { display: none !important; }
     a { color: #2563eb; }
   </style>
 </head>
@@ -51,8 +60,10 @@
   <h2>Traducteur</h2>
   <div class="row">Moteur
     <select id="engine">
-      <option value="google">Gratuit (Google + Microsoft)</option>
-      <option value="claude">Claude (contexte)</option>
+      <option value="google">Google (gratuit, par défaut)</option>
+      <option value="microsoft">Microsoft (gratuit)</option>
+      <option value="claude">Claude (contexte, clé API)</option>
+      <option value="ollama">Local — Ollama (contexte, privé)</option>
     </select>
   </div>
   <div id="claudeBox" hidden>
@@ -64,6 +75,23 @@
     </div>
     <input type="password" id="apiKey" placeholder="Clé API Claude (sk-ant-…)" autocomplete="off">
     <p class="hint">Crée ta clé sur <a href="https://console.anthropic.com/settings/keys" target="_blank">console.anthropic.com</a>. Elle reste sur cet ordinateur et sert uniquement à appeler Claude.</p>
+  </div>
+  <div id="ollamaBox" hidden>
+    <div class="field"><span>Adresse d'Ollama</span><input type="text" id="ollamaUrl" placeholder="http://localhost:11434"></div>
+    <div class="field"><span>Modèle</span><input type="text" id="ollamaModel" placeholder="qwen3:8b"></div>
+    <button id="ollamaTestBtn">Tester la connexion</button>
+    <div id="ollamaTest"></div>
+    <details>
+      <summary>Installer Ollama (une seule fois)</summary>
+      <p>1. Installe Ollama depuis <a href="https://ollama.com" target="_blank">ollama.com</a>.</p>
+      <p>2. Dans le Terminal :<br><code>launchctl setenv OLLAMA_ORIGINS "chrome-extension://*"</code><br><code>ollama pull qwen3:8b</code><br>(ou <code>qwen3:14b</code> si ton Mac a 24 Go de mémoire ou plus)</p>
+      <p>3. Quitte puis relance Ollama.</p>
+      <p>Sans OLLAMA_ORIGINS, Ollama refuse l'extension (erreur 403). Si Ollama n'est pas lancé, l'extension utilise Google en attendant.</p>
+    </details>
+  </div>
+  <div id="contextBox" hidden>
+    <div class="field"><span>Contexte de l'œuvre (facultatif)</span><textarea id="workContext" rows="2" placeholder="Empresses in the Palace (甄嬛传), drame de cour Qing ; l'anglais est lui-même traduit du chinois"></textarea></div>
+    <div class="field"><span>Glossaire (facultatif, un terme par ligne)</span><textarea id="glossary" rows="3" placeholder="Your Majesty = Votre Majesté&#10;Noble Consort = Noble Consort"></textarea></div>
   </div>
   <div id="status"></div>
   <script src="popup.js"></script>
