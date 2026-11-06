@@ -7,7 +7,7 @@
   if (window.__stfrLoaded) return;
   window.__stfrLoaded = true;
 
-  const DEFAULTS = { enabled: true, target: 'fr', mode: 'bilingual', size: 1, autoCC: true, engine: 'google' };
+  const DEFAULTS = { enabled: true, target: 'fr', mode: 'translation', size: 1, autoCC: true, engine: 'google' };
   let settings = { ...DEFAULTS };
   const IS_YT = /(^|\.)(youtube|youtube-nocookie)\.com$/.test(location.hostname);
 
@@ -601,7 +601,11 @@
       line('stfr-orig', orig);
       if (tr && tr !== orig) line('stfr-tr', tr);
     } else {
-      line('stfr-tr' + (tr ? '' : ' stfr-pending'), tr || orig);
+      if (!tr) {
+        ov.style.display = 'none'; // traduction seule : jamais d'anglais, même une fraction de seconde
+        return;
+      }
+      line('stfr-tr', tr);
     }
     ov.appendChild(box);
   }

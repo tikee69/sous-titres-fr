@@ -1,4 +1,4 @@
-const DEFAULTS = { enabled: true, target: 'fr', mode: 'bilingual', size: 1, autoCC: true, engine: 'google' };
+const DEFAULTS = { enabled: true, target: 'fr', mode: 'translation', size: 1, autoCC: true, engine: 'google' };
 const LOCAL = { apiKey: '', model: 'claude-haiku-5-5', status: null };
 const $ = (id) => document.getElementById(id);
 

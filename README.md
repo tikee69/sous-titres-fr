@@ -1,6 +1,6 @@
 # Sous-titres FR (extension Chrome)
 
-Traduit **instantanément** les sous-titres des vidéos (YouTube, Tubi et la plupart des sites) en français, en bilingue (original + traduction) ou en traduction seule. Même principe qu'Immersive Translate.
+Traduit **instantanément** les sous-titres des vidéos (YouTube, Tubi et la plupart des sites) en français, en traduction seule (par défaut) ou en bilingue (original + traduction). Même principe qu'Immersive Translate.
 
 Testé en conditions réelles sur Tubi (série chinoise sous-titrée en anglais et en espagnol).
 
