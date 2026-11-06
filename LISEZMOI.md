@@ -25,6 +25,7 @@ Testé en conditions réelles sur Tubi (série chinoise sous-titrée en anglais 
 - **Pubs** : rien ne s'affiche pendant une pub.
 - **Sous-titres automatiques YouTube** (mot par mot) : ils sont regroupés en vraies phrases avant d'être traduits.
 - Chrome Traduction et Immersive Translate ne peuvent pas retraduire notre affichage.
+- **Fond des sous-titres** : avec ou sans fond noir, au choix dans le menu. Sans fond, le texte est blanc avec un contour noir.
 
 ## Traducteurs (au choix dans le menu de l'extension)
 - **Google (par défaut, gratuit)** : Google Traduction, avec relais automatique vers Microsoft Edge si Google limite les demandes.

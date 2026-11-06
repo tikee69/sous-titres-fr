@@ -55,6 +55,7 @@
       <option value="1.5">Très grande</option>
     </select>
   </div>
+  <label><input type="checkbox" id="bg"> Fond noir derrière les sous-titres</label>
   <label><input type="checkbox" id="autoCC"> Allumer les sous-titres YouTube automatiquement</label>
 
   <h2>Traducteur</h2>
@@ -78,15 +79,14 @@
   </div>
   <div id="ollamaBox" hidden>
     <div class="field"><span>Adresse d'Ollama</span><input type="text" id="ollamaUrl" placeholder="http://localhost:11434"></div>
-    <div class="field"><span>Modèle</span><input type="text" id="ollamaModel" placeholder="qwen3:8b"></div>
+    <div class="field"><span>Modèle</span><input type="text" id="ollamaModel" placeholder="hf.co/unsloth/Hy-MT2-7B-GGUF:UD-Q4_K_XL"></div>
     <button id="ollamaTestBtn">Tester la connexion</button>
     <div id="ollamaTest"></div>
     <details>
       <summary>Installer Ollama (une seule fois)</summary>
-      <p>1. Installe Ollama depuis <a href="https://ollama.com" target="_blank">ollama.com</a>.</p>
-      <p>2. Dans le Terminal :<br><code>launchctl setenv OLLAMA_ORIGINS "chrome-extension://*"</code><br><code>ollama pull qwen3:8b</code><br>(ou <code>qwen3:14b</code> si ton Mac a 24 Go de mémoire ou plus)</p>
-      <p>3. Quitte puis relance Ollama.</p>
-      <p>Sans OLLAMA_ORIGINS, Ollama refuse l'extension (erreur 403). Si Ollama n'est pas lancé, l'extension utilise Google en attendant.</p>
+      <p>1. Installe et lance Ollama (<a href="https://ollama.com" target="_blank">ollama.com</a>).</p>
+      <p>2. C'est tout : l'extension télécharge elle-même le modèle (Hy-MT2-7B de Tencent, environ 4,8 Go) et n'a besoin d'aucun réglage dans le Terminal.</p>
+      <p>Autres modèles possibles : <code>qwen3:8b</code>, <code>qwen3:14b</code>… Si Ollama n'est pas lancé, l'extension utilise Google en attendant.</p>
     </details>
   </div>
   <div id="contextBox" hidden>

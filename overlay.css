@@ -63,3 +63,12 @@
 .stfr-on .stfr-native {
   opacity: 0 !important;
 }
+
+/* Option « sans fond » : texte blanc avec un contour noir, lisible sur n'importe quelle image */
+.stfr-nobg .stfr-line {
+  background: transparent;
+  padding: 0 0.2em;
+  text-shadow:
+    -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000,
+    0 0 3px #000, 0 0 6px rgba(0, 0, 0, 0.9);
+}

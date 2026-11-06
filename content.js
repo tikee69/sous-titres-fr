@@ -7,7 +7,7 @@
   if (window.__stfrLoaded) return;
   window.__stfrLoaded = true;
 
-  const DEFAULTS = { enabled: true, target: 'fr', mode: 'translation', size: 1, autoCC: true, engine: 'google' };
+  const DEFAULTS = { enabled: true, target: 'fr', mode: 'translation', size: 1, autoCC: true, engine: 'google', bg: true };
   let settings = { ...DEFAULTS };
   const IS_YT = /(^|\.)(youtube|youtube-nocookie)\.com$/.test(location.hostname);
 
@@ -29,7 +29,16 @@
       settings = { ...DEFAULTS, ...s };
       refresh();
     });
-    chrome.storage.onChanged.addListener((ch) => {
+    chrome.storage.onChanged.addListener((ch, area) => {
+      if (area === 'local') {
+        // le modèle local vient d'être installé, ou ses réglages ont changé : on retraduit avec lui
+        if (('ollamaReadyAt' in ch || 'ollamaModel' in ch) && wantEngine() === 'ollama') {
+          for (const k of [...trCache.keys()]) if (k.includes('|ollama|')) trCache.delete(k);
+          cues.forEach((c) => (c.tr = null));
+          translateAll();
+        }
+        return;
+      }
       for (const k in ch) settings[k] = ch[k].newValue;
       if ('target' in ch || 'engine' in ch) {
         cues.forEach((c) => (c.tr = null));
@@ -280,6 +289,8 @@
   // Avec Claude, Google traduit quand même tout de suite les toutes premières phrases pour ne rien faire attendre,
   // puis la version Claude remplace chaque phrase dès qu'elle arrive.
   let failures = 0;
+  // identifiant de cette page : si elle est rechargée ou quittée, ses demandes en attente sont abandonnées
+  const PAGE_ID = Math.random().toString(36).slice(2);
   const ck = (target, eng, text) => target + '|' + eng + '|' + text;
   const CONTEXT_ENGINES = ['claude', 'ollama']; // moteurs qui traduisent par scène, avec le contexte
   const wantEngine = () => (['claude', 'ollama', 'microsoft'].includes(settings.engine) ? settings.engine : 'google');
@@ -345,12 +356,12 @@
 
   function request(texts, target, myGen, engine) {
     if (!texts.length) return;
-    const msg = { type: 'translate', texts, target, engine };
+    const msg = { type: 'translate', texts, target, engine, page: PAGE_ID + ':' + myGen };
     if (CONTEXT_ENGINES.includes(engine)) msg.context = ctxFor(texts);
     sendMsg(msg, (res) => {
       // petit diagnostic lisible depuis la page (aucune donnée personnelle)
       const d = document.documentElement.dataset;
-      d.stfrDiag = JSON.stringify({ v: chrome.runtime.getManifest().version, ok: !!(res && res.ok), engine: res && res.engine, err: res ? res.error || null : 'pas de réponse', n: texts.length, cues: cues.length });
+      d.stfrDiag = JSON.stringify({ v: chrome.runtime.getManifest().version, ok: !!(res && res.ok), engine: res && res.engine, err: res ? res.error || null : 'pas de réponse', warn: (res && res.warn) || null, n: texts.length, cues: cues.length });
       if (!res || !res.ok) {
         if (failures++ < 5) setTimeout(() => myGen === gen && translateAll(), 2000 * failures);
         return;
@@ -358,7 +369,7 @@
       failures = 0;
       const used = res.engine || engine; // sans clé API, le service bascule sur Google
       texts.forEach((s, i) => res.result[i] && trCache.set(ck(target, used, s), res.result[i]));
-      if (used !== engine) texts.forEach((s, i) => res.result[i] && trCache.set(ck(target, engine, s), res.result[i]));
+      if (used !== engine && engine !== 'ollama') texts.forEach((s, i) => res.result[i] && trCache.set(ck(target, engine, s), res.result[i]));
       if (myGen !== gen || target !== settings.target) return;
       applyCache();
       // des répliques sont restées sans traduction (Google a demandé de ralentir) : on redemande plus tard
@@ -585,6 +596,7 @@
     lastKey = key;
 
     const ov = getOverlay(video);
+    ov.classList.toggle('stfr-nobg', settings.bg === false); // option « sans fond »
     place(video, ov);
     ov.textContent = '';
     if (!orig) {

@@ -7,6 +7,7 @@
 // Si le moteur choisi échoue, on bascule automatiquement sur les traducteurs gratuits : jamais d'écran vide.
 
 const PARALLEL = 2; // Google : 2 demandes à la fois au maximum
+const HY_MODEL = 'hf.co/unsloth/Hy-MT2-7B-GGUF:UD-Q4_K_XL';
 const cache = new Map();
 
 // =====================================================================  mise à jour automatique
@@ -33,11 +34,17 @@ chrome.alarms.create('stfr-update', { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener((a) => a.name === 'stfr-update' && checkUpdate());
 checkUpdate();
 
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+// Pour chaque onglet (et cadre), la dernière page qui a demandé des traductions. Les demandes d'une page
+// rechargée ou quittée ne servent plus à rien : le moteur local les saute au lieu de faire attendre les autres.
+const latestPage = new Map();
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || msg.type !== 'translate' || !Array.isArray(msg.texts)) return;
   checkUpdate();
+  const where = sender && sender.tab ? sender.tab.id + '/' + (sender.frameId || 0) : null;
+  if (where && msg.page) latestPage.set(where, msg.page);
+  msg.alive = () => !where || !msg.page || latestPage.get(where) === msg.page;
   handle(msg)
-    .then(sendResponse)
+    .then((res) => sendResponse({ ...res, warn: lastWarn }))
     .catch((e) => sendResponse({ ok: false, error: String(e) }));
   return true;
 });
@@ -47,7 +54,7 @@ async function handle(msg) {
   await loadCache();
   const cfg = await chrome.storage.local.get({
     apiKey: '', model: 'claude-haiku-5-5',
-    ollamaUrl: 'http://localhost:11434', ollamaModel: 'qwen3:8b',
+    ollamaUrl: 'http://localhost:11434', ollamaModel: 'hf.co/unsloth/Hy-MT2-7B-GGUF:UD-Q4_K_XL',
     workContext: '', glossary: '',
   });
   const context = { ...(msg.context || {}), work: cfg.workContext, glossary: cfg.glossary };
@@ -68,7 +75,7 @@ async function handle(msg) {
 
   if (msg.engine === 'ollama') {
     try {
-      const result = await ollamaBatch(msg.texts, target, context, cfg);
+      const result = await ollamaBatch(msg.texts, target, context, cfg, msg.alive);
       await warn(null);
       return { ok: true, engine: 'ollama', result };
     } catch (e) {
@@ -85,7 +92,9 @@ async function handle(msg) {
 }
 
 // Avertissement discret : un « ! » sur l'icône de l'extension, et le message dans son menu.
+let lastWarn = null;
 async function warn(text) {
+  lastWarn = text;
   await setStatus(text);
   try {
     await chrome.action.setBadgeText({ text: text ? '!' : '' });
@@ -459,10 +468,11 @@ function ollamaError(e, cfg) {
   return err;
 }
 
-async function ollamaBatch(texts, target, context, cfg) {
+async function ollamaBatch(texts, target, context, cfg, alive = () => true) {
   const base = (cfg.ollamaUrl || 'http://localhost:11434').replace(/\/+$/, '');
-  const model = cfg.ollamaModel || 'qwen3:8b';
-  const key = (t) => `ollama|${model}|${target}|${t}`;
+  const model = cfg.ollamaModel || 'hf.co/unsloth/Hy-MT2-7B-GGUF:UD-Q4_K_XL';
+  // « L » = traduction réplique par réplique (les anciennes traductions par lot de Hy-MT2 sont ignorées)
+  const key = (t) => `${/hy-mt/i.test(model) ? 'ollamaL' : 'ollama'}|${model}|${target}|${t}`;
   const out = new Array(texts.length).fill(null);
   const todo = [];
   texts.forEach((t, i) => {
@@ -470,6 +480,34 @@ async function ollamaBatch(texts, target, context, cfg) {
     if (hit) out[i] = hit;
     else todo.push(i);
   });
+
+  // Hy-MT2 est fait pour traduire un texte à la fois : on lui envoie chaque réplique seule, avec ses voisines
+  // comme contexte. Impossible alors qu'une réplique « glisse » sur la suivante (décalage).
+  if (/hy-mt/i.test(model)) {
+    let done = 0;
+    for (const i of todo) {
+      const before = (context.before || []).concat(texts.slice(0, i)).slice(-5);
+      const after = texts.slice(i + 1, i + 3);
+      let v = null;
+      try {
+        v = await ollamaSlot(() => (alive() ? hyLine(base, model, texts[i], target, { ...context, before, after }) : 'STOP'));
+      } catch (e) {
+        if (e.connection && done === 0) throw e;
+      }
+      if (v === 'STOP') return out; // page fermée ou rechargée : on abandonne
+      if (v) {
+        out[i] = v;
+        remember(key(texts[i]), v);
+        done++;
+      }
+    }
+    const missing = out.map((v, i) => (v ? -1 : i)).filter((i) => i >= 0);
+    if (missing.length && alive()) {
+      const g = await freeBatch(missing.map((i) => texts[i]), target).catch(() => []);
+      missing.forEach((i, k) => (out[i] = g[k] || null));
+    }
+    return out;
+  }
 
   const chunks = [];
   for (let i = 0; i < todo.length; i += OLLAMA_CHUNK) chunks.push(todo.slice(i, i + OLLAMA_CHUNK));
@@ -481,7 +519,8 @@ async function ollamaBatch(texts, target, context, cfg) {
     let res = null;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        res = await ollamaSlot(() => ollamaCall(base, model, lines, target, { ...context, before }));
+        res = await ollamaSlot(() => (alive() ? ollamaCall(base, model, lines, target, { ...context, before }) : null));
+        if (res === null && !alive()) return out; // page fermée ou rechargée : on abandonne
       } catch (e) {
         // Ollama absent ou qui refuse l'extension : inutile d'insister, on bascule tout de suite
         if (e.connection && done === 0) throw e;
@@ -510,6 +549,7 @@ async function ollamaBatch(texts, target, context, cfg) {
 }
 
 async function ollamaCall(base, model, lines, target, context) {
+  if (/hy-mt/i.test(model)) return hyCall(base, model, lines, target, context);
   const lang = LANGS[target] || target;
   const system =
     `Tu es un traducteur professionnel de sous-titres. Tu traduis en ${lang}.\n` +
@@ -555,7 +595,10 @@ async function ollamaCall(base, model, lines, target, context) {
     clearTimeout(timer);
   }
   if (r.status === 403) throw ollamaError(new Error('Ollama refuse l\'extension (erreur 403) : OLLAMA_ORIGINS n\'est pas réglé.'));
-  if (r.status === 404) throw ollamaError(new Error(`Modèle « ${model} » non installé dans Ollama (ollama pull ${model}).`));
+  if (r.status === 404) {
+    startPull(base, model);
+    throw ollamaError(new Error(pullState.text || `Téléchargement du modèle « ${shortName(model)} » dans Ollama…`));
+  }
   if (!r.ok) throw new Error('Ollama HTTP ' + r.status);
   const j = await r.json();
   let text = (j.message && j.message.content) || '';
@@ -576,4 +619,261 @@ async function ollamaCall(base, model, lines, target, context) {
     if (n >= 1 && n <= lines.length && v) res[n - 1] = v;
   }
   return res;
+}
+
+// ---------------------------------------------------------------------  Hy-MT2 (Tencent)
+// Modèle spécialisé en traduction. On suit les modèles de consigne publiés par Tencent :
+// « Background Information » (contexte de l'œuvre + répliques précédentes), « Reference the following
+// translations » (glossaire) et « Structured Data » (JSON : les numéros restent, seules les répliques
+// sont traduites). Pas de consigne système, réglages recommandés par Tencent.
+const LANGS_EN = {
+  fr: 'French', en: 'English', es: 'Spanish', de: 'German', it: 'Italian',
+  pt: 'Portuguese', ar: 'Arabic', 'zh-CN': 'Simplified Chinese', ja: 'Japanese',
+};
+
+async function hyCall(base, model, lines, target, context) {
+  const lang = LANGS_EN[target] || target;
+  let p = '';
+  const bg = [];
+  if (context.work) bg.push(context.work);
+  else if (context.title) bg.push('Video title: ' + context.title);
+  bg.push('These are consecutive subtitle lines of a video; a sentence can continue on the next line.');
+  if (context.before && context.before.length) bg.push('Previous lines (context only, do not translate):\n' + context.before.join('\n'));
+  p += '[Background Information]\n' + bg.join('\n') + '\n\n';
+  const gl = String(context.glossary || '')
+    .split('\n')
+    .map((l) => l.split('='))
+    .filter((x) => x.length === 2 && x[0].trim() && x[1].trim());
+  if (gl.length) p += 'Reference the following translations:\n' + gl.map(([a, b]) => `${a.trim()} translates to ${b.trim()}`).join('\n') + '\n\n';
+  const obj = {};
+  lines.forEach((l, i) => (obj[i + 1] = l));
+  p +=
+    '### Task\n' +
+    `Translate the user-facing text within the following JSON data into ${lang}, taking the provided background information into consideration. ` +
+    'Use natural spoken language that fits each character, and keep names and titles consistent.\n' +
+    '### Strict Rules\n' +
+    '1. **Structure Preservation:** You MUST preserve the original JSON data structure exactly as it is: same keys, same number of entries.\n' +
+    '2. **Selective Translation:** Translate ONLY the values (the subtitle lines).\n' +
+    '3. **Strict Non-Translation:** NEVER translate or alter the keys. Leave them exactly in their original form.\n' +
+    'Only output the translated JSON, without any additional explanation.\n' +
+    '### Source Data\n' +
+    JSON.stringify(obj);
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 180000);
+  let r;
+  try {
+    r = await fetch(base + '/api/chat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      signal: ctrl.signal,
+      body: JSON.stringify({
+        model,
+        stream: false,
+        format: 'json',
+        options: { temperature: 0.7, top_p: 0.6, top_k: 20, repeat_penalty: 1.05, num_ctx: 8192, num_predict: 80 + 60 * lines.length },
+        messages: [{ role: 'user', content: p }],
+      }),
+    });
+  } catch (e) {
+    throw ollamaError(new Error('Ollama ne répond pas (pas lancé ?).'));
+  } finally {
+    clearTimeout(timer);
+  }
+  if (r.status === 403) throw ollamaError(new Error("Ollama refuse l'extension (erreur 403)."));
+  if (r.status === 404) {
+    startPull(base, model);
+    throw ollamaError(new Error(pullState.text || `Téléchargement du modèle « ${shortName(model)} » dans Ollama…`));
+  }
+  if (!r.ok) {
+    const body = await r.text().catch(() => '');
+    throw new Error('Ollama HTTP ' + r.status + (body ? ' : ' + body.slice(0, 160) : ''));
+  }
+  const j = await r.json();
+  return parseNumbered((j.message && j.message.content) || '', lines.length);
+}
+
+function parseNumbered(text, n) {
+  text = text.replace(/<think>[\s\S]*?<\/think>/g, '').replace(/```(?:json)?/g, '');
+  const res = new Array(n).fill(null);
+  const a = text.indexOf('{');
+  const b = text.lastIndexOf('}');
+  if (a < 0 || b <= a) return res;
+  let parsed = {};
+  try {
+    parsed = JSON.parse(text.slice(a, b + 1));
+  } catch (_) {
+    return res;
+  }
+  for (const k in parsed) {
+    const i = parseInt(k, 10);
+    const v = typeof parsed[k] === 'string' ? parsed[k].trim() : '';
+    if (i >= 1 && i <= n && v) res[i - 1] = v;
+  }
+  return res;
+}
+
+// ---------------------------------------------------------------------  installation automatique du modèle
+// Si le modèle n'est pas encore dans Ollama, l'extension le télécharge elle-même (comme « ollama pull »).
+// Le téléchargement reprend là où il s'était arrêté si Chrome ou Ollama redémarrent.
+const pullState = { running: false, text: '', model: '' };
+const shortName = (m) => String(m).replace(/^hf\.co\/[^/]+\//, '').replace(/-GGUF/i, '');
+
+async function startPull(base, model) {
+  if (pullState.running) return;
+  pullState.running = true;
+  pullState.model = model;
+  pullState.text = `Téléchargement du modèle ${shortName(model)} dans Ollama…`;
+  await chrome.storage.local.set({ pullWanted: { base, model } });
+  try {
+    const r = await fetch(base + '/api/pull', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model, stream: true }),
+    });
+    if (!r.ok || !r.body) throw new Error('HTTP ' + r.status);
+    const reader = r.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    let lastPct = -1;
+    let ok = false;
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line) continue;
+        let ev;
+        try {
+          ev = JSON.parse(line);
+        } catch (_) {
+          continue;
+        }
+        if (ev.error) throw new Error(ev.error);
+        if (ev.total && ev.completed) {
+          const pct = Math.floor((ev.completed / ev.total) * 100);
+          if (pct !== lastPct && pct % 2 === 0) {
+            lastPct = pct;
+            pullState.text = `Téléchargement du modèle ${shortName(model)} : ${pct} % (${(ev.total / 1e9).toFixed(1)} Go). Traduction Google en attendant.`;
+            await warn(pullState.text);
+          }
+        }
+        if (ev.status === 'success') ok = true;
+      }
+    }
+    if (!ok) throw new Error('téléchargement interrompu');
+    pullState.text = '';
+    await chrome.storage.local.set({ pullWanted: null, ollamaReadyAt: Date.now() });
+    await warn(null);
+  } catch (e) {
+    pullState.text = `Téléchargement du modèle interrompu (${(e && e.message) || e}), reprise automatique bientôt.`;
+    await warn(pullState.text);
+  } finally {
+    pullState.running = false;
+  }
+}
+
+// reprise d'un téléchargement interrompu (Chrome fermé, Mac en veille…), vérifiée toutes les 30 s
+async function resumePull() {
+  const { pullWanted } = await chrome.storage.local.get('pullWanted');
+  if (pullWanted && !pullState.running) startPull(pullWanted.base, pullWanted.model);
+}
+chrome.alarms.onAlarm.addListener((a) => a.name === 'stfr-update' && resumePull());
+
+// ---------------------------------------------------------------------  accès à Ollama sans réglage
+// Ollama refuse par défaut les demandes venant d'une extension (en-tête Origin « chrome-extension:// »)
+// tant qu'on n'a pas réglé OLLAMA_ORIGINS dans le Terminal. Pour s'en passer, on retire cet en-tête,
+// mais UNIQUEMENT pour les demandes faites par cette extension vers Ollama sur ce Mac.
+// Les sites web, eux, restent bloqués par Ollama comme avant.
+async function allowOllama() {
+  try {
+    const id = chrome.runtime.id;
+    const rules = ['localhost', '127.0.0.1'].map((host, i) => ({
+      id: 9001 + i,
+      priority: 1,
+      action: { type: 'modifyHeaders', requestHeaders: [{ header: 'origin', operation: 'remove' }] },
+      condition: { urlFilter: `|http://${host}:11434/`, initiatorDomains: [id], resourceTypes: ['xmlhttprequest', 'other'] },
+    }));
+    await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: rules.map((r) => r.id), addRules: rules });
+  } catch (_) {}
+}
+allowOllama();
+
+// ---------------------------------------------------------------------  passage à Hy-MT2 (demandé par l'utilisateur)
+// Une seule fois, à l'installation de cette version : moteur « Local » avec Hy-MT2. Ensuite, c'est le
+// choix fait dans le menu qui compte.
+(async () => {
+  try {
+    const { migr080 } = await chrome.storage.local.get('migr080');
+    if (migr080) return;
+    const { ollamaModel } = await chrome.storage.local.get('ollamaModel');
+    const set = { migr080: true };
+    if (!ollamaModel || ollamaModel === 'qwen3:8b') set.ollamaModel = HY_MODEL;
+    await chrome.storage.local.set(set);
+    await chrome.storage.sync.set({ engine: 'ollama' });
+  } catch (_) {}
+})();
+
+// Une réplique avec le modèle de consigne « contexte » de Tencent ([Background Information] / [Source Text]).
+async function hyLine(base, model, line, target, context) {
+  const lang = LANGS_EN[target] || target;
+  const bg = [];
+  if (context.work) bg.push(context.work);
+  else if (context.title) bg.push('Video title: ' + context.title);
+  bg.push('The text is one subtitle line of a video.');
+  if (context.before && context.before.length) bg.push('Previous subtitle lines:\n' + context.before.join('\n'));
+  if (context.after && context.after.length) bg.push('Next subtitle lines:\n' + context.after.join('\n'));
+  let p = '';
+  const gl = String(context.glossary || '')
+    .split('\n')
+    .map((l) => l.split('='))
+    .filter((x) => x.length === 2 && x[0].trim() && x[1].trim());
+  if (gl.length) p += 'Reference the following translations:\n' + gl.map(([a, b]) => `${a.trim()} translates to ${b.trim()}`).join('\n') + '\n\n';
+  p +=
+    '[Background Information]\n' + bg.join('\n') + '\n\n' +
+    `Please translate the following text into ${lang}, taking the provided background information into consideration. ` +
+    'Translate ONLY the source text, not the previous or next lines. ' +
+    'Note that you should only output the translated result without any additional explanation.\n' +
+    '[Source Text]\n' + line;
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 60000);
+    let r;
+    try {
+      r = await fetch(base + '/api/chat', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        signal: ctrl.signal,
+        body: JSON.stringify({
+          model,
+          stream: false,
+          options: {
+            temperature: attempt ? 0.2 : 0.7, top_p: 0.6, top_k: 20, repeat_penalty: 1.05,
+            num_ctx: 4096, num_predict: 40 + line.length * 2,
+          },
+          messages: [{ role: 'user', content: p }],
+        }),
+      });
+    } catch (e) {
+      throw ollamaError(new Error('Ollama ne répond pas (pas lancé ?).'));
+    } finally {
+      clearTimeout(timer);
+    }
+    if (r.status === 403) throw ollamaError(new Error("Ollama refuse l'extension (erreur 403)."));
+    if (r.status === 404) {
+      startPull(base, model);
+      throw ollamaError(new Error(pullState.text || `Téléchargement du modèle « ${shortName(model)} » dans Ollama…`));
+    }
+    if (!r.ok) throw new Error('Ollama HTTP ' + r.status);
+    const j = await r.json();
+    let v = ((j.message && j.message.content) || '').replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+    v = v.replace(/^\[?(Translation|Traduction)\]?\s*:?\s*/i, '').replace(/^["«“]\s*|\s*["»”]$/g, '').split('\n')[0].trim();
+    // garde-fou : une traduction 3 fois plus longue que l'original a sans doute traduit les voisines aussi
+    if (v && v.length <= line.length * 3 + 30) return v;
+  }
+  return null;
 }

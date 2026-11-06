@@ -1,7 +1,7 @@
-const DEFAULTS = { enabled: true, target: 'fr', mode: 'translation', size: 1, autoCC: true, engine: 'google' };
+const DEFAULTS = { enabled: true, target: 'fr', mode: 'translation', size: 1, autoCC: true, engine: 'google', bg: true };
 const LOCAL = {
   apiKey: '', model: 'claude-haiku-5-5', status: null,
-  ollamaUrl: 'http://localhost:11434', ollamaModel: 'qwen3:8b', workContext: '', glossary: '',
+  ollamaUrl: 'http://localhost:11434', ollamaModel: 'hf.co/unsloth/Hy-MT2-7B-GGUF:UD-Q4_K_XL', workContext: '', glossary: '',
 };
 const $ = (id) => document.getElementById(id);
 
@@ -15,6 +15,7 @@ function showEngine() {
 chrome.storage.sync.get(DEFAULTS, (s) => {
   $('enabled').checked = s.enabled;
   $('autoCC').checked = s.autoCC;
+  $('bg').checked = s.bg !== false;
   $('target').value = s.target;
   $('mode').value = s.mode;
   $('size').value = String(s.size);
@@ -41,7 +42,7 @@ function retranslate() {
   });
 }
 
-for (const id of ['enabled', 'autoCC']) {
+for (const id of ['enabled', 'autoCC', 'bg']) {
   $(id).addEventListener('change', (e) => chrome.storage.sync.set({ [id]: e.target.checked }));
 }
 for (const id of ['target', 'mode', 'engine']) {
@@ -70,12 +71,12 @@ for (const id of ['ollamaUrl', 'ollamaModel', 'workContext', 'glossary']) {
 $('ollamaTestBtn').addEventListener('click', async () => {
   const out = $('ollamaTest');
   const base = ($('ollamaUrl').value.trim() || 'http://localhost:11434').replace(/\/+$/, '');
-  const model = $('ollamaModel').value.trim() || 'qwen3:8b';
+  const model = $('ollamaModel').value.trim() || 'hf.co/unsloth/Hy-MT2-7B-GGUF:UD-Q4_K_XL';
   out.className = '';
   out.textContent = 'Test en cours…';
   try {
     const r = await fetch(base + '/api/tags');
-    if (r.status === 403) throw new Error("Ollama refuse l'extension (403) : règle OLLAMA_ORIGINS puis relance Ollama.");
+    if (r.status === 403) throw new Error("Ollama refuse l'extension (403). Ferme et rouvre le menu, puis réessaie.");
     if (!r.ok) throw new Error('Ollama répond une erreur ' + r.status + '.');
     const j = await r.json();
     const names = (j.models || []).map((m) => m.name);
@@ -85,7 +86,7 @@ $('ollamaTestBtn').addEventListener('click', async () => {
       out.textContent = `Ollama fonctionne et le modèle « ${model} » est installé.`;
     } else {
       out.className = 'ko';
-      out.textContent = `Ollama fonctionne, mais le modèle « ${model} » n'est pas installé (ollama pull ${model}).` + (names.length ? ' Modèles présents : ' + names.join(', ') + '.' : '');
+      out.textContent = `Ollama fonctionne. Le modèle « ${model} » n'est pas encore installé : l'extension le téléchargera toute seule à la première vidéo.` + (names.length ? ' Modèles présents : ' + names.join(', ') + '.' : '');
     }
   } catch (e) {
     out.className = 'ko';

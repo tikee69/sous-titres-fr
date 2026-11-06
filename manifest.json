@@ -1,11 +1,12 @@
 {
   "manifest_version": 3,
   "name": "Sous-titres FR",
-  "version": "0.7.0",
+  "version": "0.8.4",
   "description": "Traduit instantanément les sous-titres des vidéos (YouTube et autres sites), avec Google ou avec Claude.",
   "permissions": [
     "storage",
-    "alarms"
+    "alarms",
+    "declarativeNetRequestWithHostAccess"
   ],
   "host_permissions": [
     "https://translate.googleapis.com/*",
