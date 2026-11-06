@@ -16,6 +16,8 @@
   let cueVideoId = null;
   let gen = 0;
   const netCache = new Map(); // YouTube : id de vidéo -> sous-titres déjà reçus
+  const netFiles = []; // autres sites : fichiers de sous-titres reçus (une entrée par langue)
+  let curFile = null;
   const trCache = new Map(); // "langue|texte" -> traduction
   let video = null;
   let lastKey = null;
@@ -224,7 +226,7 @@
     // HLS segmenté avec décalage horaire (X-TIMESTAMP-MAP) : le lecteur recale lui-même ces sous-titres
     // dans une piste <track>, plus fiable -> on laisse la source "piste" s'en charger.
     if (parsed.hasTimestampMap) return;
-    // Autres sites : fichier complet -> on remplace ; petit segment (streaming HLS/DASH) -> on ajoute
+    // Autres sites : fichier complet -> on le garde ; petit segment (streaming HLS/DASH) -> on ajoute
     const v = pickVideo();
     const dur = v && isFinite(v.duration) ? v.duration : 0;
     const span = parsed[parsed.length - 1].end - parsed[0].start;
@@ -233,7 +235,19 @@
       const add = parsed.filter((c) => !seen.has(c.start.toFixed(2) + c.text));
       if (!add.length) return;
       setCues(cues.concat(add).sort((a, b) => a.start - b.start), 'net', null, true);
-    } else {
+      return;
+    }
+    // Plusieurs langues peuvent arriver d'un coup (Tubi charge anglais + espagnol) : on les garde toutes
+    // et on suit celle que le site affiche vraiment (voir followSiteTrack).
+    const key = String(url).split('?')[0];
+    const known = netFiles.find((f) => f.key === key);
+    if (known) known.parsed = parsed;
+    else netFiles.push({ key, parsed, at: Date.now() });
+    if (netFiles.length > 8) netFiles.shift();
+    const lastAt = netFiles.length > 1 ? netFiles[netFiles.length - 2].at : 0;
+    // premier fichier, ou fichier téléchargé bien après les autres (= l'utilisateur vient de changer de langue)
+    if (cueSource !== 'net' || !cues.length || key === curFile || Date.now() - lastAt > 3000) {
+      curFile = key;
       setCues(parsed, 'net', null);
     }
   }
@@ -242,7 +256,7 @@
     if (!keepTr) {
       gen++;
       if (native.box) native.box.classList.remove('stfr-native');
-      Object.assign(native, { box: null, known: false, okAt: 0, searchAt: 0, misses: 0, cueText: '', cueAt: 0 });
+      Object.assign(native, { box: null, known: false, okAt: 0, searchAt: 0, misses: 0, cueText: '', cueAt: 0, lift: null });
     }
     cues = list.map((c) => ({ start: c.start, end: c.end, text: c.text, tr: c.tr || null }));
     cueSource = source;
@@ -316,8 +330,9 @@
     const behind = uniq(need.filter((c) => c.end < t)).filter((s) => !ahead.includes(s));
     const groups = [];
     if (ahead.length) groups.push(ahead.slice(0, 6));
-    for (let i = 6; i < ahead.length; i += 40) groups.push(ahead.slice(i, i + 40));
-    for (let i = 0; i < behind.length; i += 40) groups.push(behind.slice(i, i + 40));
+    const size = eng === 'claude' ? 40 : 150;
+    for (let i = 6; i < ahead.length; i += size) groups.push(ahead.slice(i, i + size));
+    for (let i = 0; i < behind.length; i += size) groups.push(behind.slice(i, i + size));
     if (eng === 'claude') {
       const fast = ahead.concat(behind).slice(0, 10).filter((s) => !trCache.has(ck(target, 'google', s)));
       request(fast, target, myGen, 'google');
@@ -330,6 +345,9 @@
     const msg = { type: 'translate', texts, target, engine };
     if (engine === 'claude') msg.context = ctxFor(texts);
     sendMsg(msg, (res) => {
+      // petit diagnostic lisible depuis la page (aucune donnée personnelle)
+      const d = document.documentElement.dataset;
+      d.stfrDiag = JSON.stringify({ v: chrome.runtime.getManifest().version, ok: !!(res && res.ok), engine: res && res.engine, err: res ? res.error || null : 'pas de réponse', n: texts.length, cues: cues.length });
       if (!res || !res.ok) {
         if (failures++ < 5) setTimeout(() => myGen === gen && translateAll(), 2000 * failures);
         return;
@@ -340,6 +358,8 @@
       if (used !== engine) texts.forEach((s, i) => res.result[i] && trCache.set(ck(target, engine, s), res.result[i]));
       if (myGen !== gen || target !== settings.target) return;
       applyCache();
+      // des répliques sont restées sans traduction (Google a demandé de ralentir) : on redemande plus tard
+      if (res.result.some((r) => !r) && failures++ < 8) setTimeout(() => myGen === gen && translateAll(), 4000 * failures);
     });
   }
 
@@ -395,6 +415,13 @@
     ov.style.width = r.width + 'px';
     ov.style.height = r.height + 'px';
     ov.style.setProperty('--stfr-size', Math.max(13, Math.round(r.height * 0.042 * (settings.size || 1))) + 'px');
+    // On se place exactement là où le site affichait ses propres sous-titres : s'il les remonte quand
+    // ses commandes apparaissent (Tubi…), les nôtres remontent avec.
+    if (!IS_YT && native.box && native.box.isConnected) {
+      const nb = native.box.getBoundingClientRect();
+      if (nb.height > 4 && nb.bottom <= r.bottom + 2 && nb.top >= r.top) native.lift = Math.max(0, Math.round(r.bottom - nb.bottom));
+    }
+    ov.style.paddingBottom = !IS_YT && native.lift != null ? native.lift + 'px' : '';
   }
 
   function hideOverlay() {
@@ -482,7 +509,42 @@
         native.misses = 0;
       } else native.misses++;
     }
-    return !(native.known && now - native.cueAt > 1500 && now - native.okAt > 1500);
+    return !(native.known && now - native.cueAt > 900 && now - native.okAt > 900);
+  }
+
+  function cueAt(list, t) {
+    let lo = 0;
+    let hi = list.length - 1;
+    let ans = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (list[mid].start <= t) {
+        ans = mid;
+        lo = mid + 1;
+      } else hi = mid - 1;
+    }
+    return ans >= 0 && t < list[ans].end ? list[ans] : null;
+  }
+
+  // Le site affiche-t-il une autre langue que celle qu'on traduit ? Si le texte à l'écran correspond
+  // à l'un des autres fichiers reçus, on bascule dessus.
+  function followSiteTrack() {
+    if (IS_YT || cueSource !== 'net' || netFiles.length < 2 || !video) return;
+    const t = video.currentTime + 0.05;
+    const cur = cueAt(cues, t);
+    if (cur && native.box && native.box.isConnected) {
+      const shown = norm(native.box.textContent);
+      if (shown && norm(cur.text).includes(shown.slice(0, 15))) return; // c'est bien la bonne langue
+    }
+    for (const f of netFiles) {
+      if (f.key === curFile) continue;
+      const c = cueAt(f.parsed, t);
+      if (c && findNativeBox(c.text)) {
+        curFile = f.key;
+        setCues(f.parsed, 'net', null);
+        return;
+      }
+    }
   }
 
   // Pub jouée dans le lecteur : la vidéo devient beaucoup plus courte que les sous-titres
@@ -510,7 +572,13 @@
     } else return hideOverlay();
 
     const key = orig + '\u0001' + tr + '\u0001' + settings.mode;
-    if (key === lastKey) return;
+    if (key === lastKey) {
+      if (overlay && !IS_YT && native.box && (performance.now() - (native.placedAt || 0) > 200)) {
+        native.placedAt = performance.now();
+        place(video, overlay);
+      }
+      return;
+    }
     lastKey = key;
 
     const ov = getOverlay(video);
@@ -697,6 +765,7 @@
   }).observe(document.documentElement, { childList: true, subtree: true, characterData: true });
 
   // ---------------------------------------------------------------- entretien (toutes les 0,5 s)
+  let tickCount = 0;
   const tick = setInterval(() => {
     // l'extension a été rechargée (mise à jour) : cette ancienne copie s'efface, la nouvelle prend le relais
     if (!chrome.runtime || !chrome.runtime.id) {
@@ -726,6 +795,7 @@
     }
     scanTracks();
     autoCC();
+    if ((tickCount = (tickCount + 1) % 2) === 0) followSiteTrack(); // une fois par seconde
     if (overlay && video && overlay.style.display !== 'none') place(video, overlay);
     startLoop();
   }, 500);

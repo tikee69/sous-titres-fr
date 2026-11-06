@@ -4,7 +4,7 @@
 //  - "claude" : API Claude avec ta clé, traduction qui tient compte du contexte (titre, phrases d'avant).
 // Si Claude échoue (pas de clé, clé refusée, réseau…), on bascule automatiquement sur Google.
 
-const PARALLEL = 6;
+const PARALLEL = 2; // Google : 2 demandes à la fois au maximum
 const cache = new Map();
 
 // =====================================================================  mise à jour automatique
@@ -42,6 +42,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
 async function handle(msg) {
   const target = msg.target || 'fr';
+  await loadCache();
   if (msg.engine === 'claude') {
     const { apiKey, model } = await chrome.storage.local.get({ apiKey: '', model: 'claude-haiku-5-5' });
     if (apiKey) {
@@ -55,7 +56,7 @@ async function handle(msg) {
       await setStatus('Pas de clé API Claude : traduction Google utilisée.');
     }
   }
-  return { ok: true, engine: 'google', result: await googleBatch(msg.texts, target) };
+  return { ok: true, engine: 'google', result: await freeBatch(msg.texts, target) };
 }
 
 function setStatus(text) {
@@ -81,9 +82,27 @@ function makeLimiter(max) {
 const slot = makeLimiter(PARALLEL); // Google
 const claudeSlot = makeLimiter(3); // Claude : 3 à la fois, pour rester sous les limites des petits comptes
 
+// Cache durable (stockage local de Chrome) : un épisode déjà traduit ne redemande plus rien,
+// même après un redémarrage de Chrome.
+let cacheLoaded = null;
+function loadCache() {
+  if (!cacheLoaded) {
+    cacheLoaded = chrome.storage.local
+      .get('tcache')
+      .then(({ tcache }) => {
+        if (tcache) for (const k in tcache) if (!cache.has(k)) cache.set(k, tcache[k]);
+      })
+      .catch(() => {});
+  }
+  return cacheLoaded;
+}
+let saveTimer = null;
 function remember(k, v) {
-  if (cache.size > 30000) cache.delete(cache.keys().next().value);
+  cache.delete(k);
   cache.set(k, v);
+  if (cache.size > 30000) cache.delete(cache.keys().next().value);
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => chrome.storage.local.set({ tcache: Object.fromEntries(cache) }).catch(() => {}), 1500);
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -131,7 +150,7 @@ async function claudeBatch(texts, target, context, key, model) {
   // les lignes que Claude n'a pas rendues -> Google
   const missing = out.map((v, i) => (v ? -1 : i)).filter((i) => i >= 0);
   if (missing.length) {
-    const g = await googleBatch(missing.map((i) => texts[i]), target);
+    const g = await freeBatch(missing.map((i) => texts[i]), target);
     missing.forEach((i, k) => (out[i] = g[k]));
   } else {
     setStatus(null);
@@ -199,10 +218,19 @@ async function claudeCall(lines, target, context, key, model) {
 }
 
 // =====================================================================  Google
-const MAX_CHUNK = 3500; // caractères encodés par requête
+// Envoi en POST : jusqu'à ~5000 caractères (≈ 120 répliques) par demande, donc un épisode entier
+// en quelques demandes seulement. Demandes espacées pour ne pas déclencher le blocage « 429 » de Google.
+const MAX_CHUNK = 5000; // caractères de texte par demande
+let nextGoogleAt = 0;
+async function pace() {
+  const wait = nextGoogleAt - Date.now();
+  nextGoogleAt = Math.max(Date.now(), nextGoogleAt) + 300;
+  if (wait > 0) await sleep(wait);
+}
 
 async function googleBatch(texts, target) {
-  const out = new Array(texts.length);
+  await loadCache();
+  const out = new Array(texts.length).fill(null);
   const todo = [];
   texts.forEach((t, i) => {
     const hit = cache.get(`google|${target}|${t}`);
@@ -214,7 +242,7 @@ async function googleBatch(texts, target) {
   let cur = [];
   let len = 0;
   for (const i of todo) {
-    const l = encodeURIComponent(texts[i]).length + 3;
+    const l = texts[i].length + 1;
     if (cur.length && len + l > MAX_CHUNK) {
       chunks.push(cur);
       cur = [];
@@ -225,32 +253,49 @@ async function googleBatch(texts, target) {
   }
   if (cur.length) chunks.push(cur);
 
+  let failed = 0;
   await Promise.all(
     chunks.map(async (idx) => {
       const lines = idx.map((i) => texts[i]);
-      const res = await slot(() => gtx(lines, target));
-      res.forEach((v, k) => {
-        out[idx[k]] = v;
-        if (v) remember(`google|${target}|${lines[k]}`, v);
-      });
+      try {
+        const res = await slot(() => gtx(lines, target));
+        res.forEach((v, k) => {
+          if (!v) return;
+          out[idx[k]] = v;
+          remember(`google|${target}|${lines[k]}`, v);
+        });
+      } catch (e) {
+        failed++; // ce paquet reste vide ; la page redemandera plus tard
+        lastGoogleError = String(e && e.message || e);
+      }
     })
   );
+  if (failed && failed === chunks.length && !out.some(Boolean)) throw new Error('Google indisponible (trop de demandes), nouvel essai bientôt');
   return out;
 }
 
-async function gcall(q, target, tries = 3) {
-  const url =
-    'https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&dt=t' +
-    '&tl=' + encodeURIComponent(target) +
-    '&q=' + encodeURIComponent(q);
+let googleBlockedUntil = 0;
+async function gcall(q, target) {
   for (let a = 0; ; a++) {
-    const r = await fetch(url);
+    if (Date.now() < googleBlockedUntil) throw new Error('Google en pause');
+    await pace();
+    const r = await fetch('https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&dt=t&tl=' + encodeURIComponent(target), {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+      body: 'q=' + encodeURIComponent(q),
+    });
     if (r.ok) {
       const j = await r.json();
       return (j[0] || []).map((s) => s[0] || '').join('');
     }
-    if (a >= tries - 1 || (r.status !== 429 && r.status < 500)) throw new Error('HTTP ' + r.status);
-    await sleep(600 * (a + 1));
+    if (r.status === 429 && a >= 1) {
+      // Google bloque : on le laisse au repos 5 minutes, Microsoft prend le relais
+      googleBlockedUntil = Date.now() + 5 * 60e3;
+      throw new Error('HTTP 429');
+    }
+    if (a >= 4 || (r.status !== 429 && r.status < 500)) throw new Error('HTTP ' + r.status);
+    // Google demande de ralentir : on espace beaucoup plus les demandes suivantes
+    nextGoogleAt = Date.now() + 1000 * 2 ** a; // 1 s, 2 s, 4 s, 8 s
   }
 }
 
@@ -260,6 +305,78 @@ async function gtx(lines, target) {
   if (parts.length === lines.length) return parts.map((p) => p.trim());
   if (lines.length === 1) return [full.trim()];
   const mid = lines.length >> 1;
-  const [a, b] = await Promise.all([gtx(lines.slice(0, mid), target), gtx(lines.slice(mid), target)]);
+  const a = await gtx(lines.slice(0, mid), target);
+  const b = await gtx(lines.slice(mid), target);
   return a.concat(b);
+}
+
+// =====================================================================  Microsoft (relais gratuit)
+// Traducteur gratuit intégré au navigateur Edge (adresse « translatetext », sans jeton).
+// Il reçoit une liste de phrases (jusqu'à 1000 / 50 000 caractères) et rend une traduction par phrase,
+// sans risque de décalage entre les lignes.
+const MS_LANG = { 'zh-CN': 'zh-Hans' };
+let lastMsError = '';
+let lastGoogleError = '';
+
+async function msBatch(texts, target) {
+  const to = MS_LANG[target] || target;
+  const out = new Array(texts.length).fill(null);
+  const chunks = [];
+  let cur = [];
+  let len = 0;
+  texts.forEach((t, i) => {
+    if (cur.length && (cur.length >= 500 || len + t.length > 40000)) {
+      chunks.push(cur);
+      cur = [];
+      len = 0;
+    }
+    cur.push(i);
+    len += t.length;
+  });
+  if (cur.length) chunks.push(cur);
+  for (const idx of chunks) {
+    for (let a = 0; a < 3; a++) {
+      try {
+        const r = await fetch('https://edge.microsoft.com/translate/translatetext?from=&to=' + encodeURIComponent(to) + '&isEnterpriseClient=false', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(idx.map((i) => texts[i])),
+        });
+        if (!r.ok) throw new Error('Microsoft HTTP ' + r.status);
+        const j = await r.json();
+        j.forEach((x, k) => {
+          const v = typeof x === 'string' ? x : x && x.translations && x.translations[0] && x.translations[0].text;
+          if (v) out[idx[k]] = v;
+        });
+        break;
+      } catch (e) {
+        lastMsError = String((e && e.message) || e);
+        await sleep(800 * (a + 1));
+      }
+    }
+  }
+  return out;
+}
+
+// Moteur gratuit : Google d'abord, Microsoft pour tout ce que Google n'a pas rendu.
+async function freeBatch(texts, target) {
+  await loadCache();
+  let out = new Array(texts.length).fill(null);
+  try {
+    out = await googleBatch(texts, target);
+  } catch (e) {
+    lastGoogleError = String(e && e.message || e);
+  }
+  const missing = out.map((v, i) => (v ? -1 : i)).filter((i) => i >= 0);
+  if (missing.length) {
+    const ms = await msBatch(missing.map((i) => texts[i]), target).catch(() => []);
+    missing.forEach((i, k) => {
+      if (ms[k]) {
+        out[i] = ms[k];
+        remember(`google|${target}|${texts[i]}`, ms[k]);
+      }
+    });
+  }
+  if (!out.some(Boolean) && texts.length) throw new Error('Traducteurs gratuits indisponibles pour le moment (Google : ' + lastGoogleError + ' / Microsoft : ' + lastMsError + ')');
+  return out;
 }

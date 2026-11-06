@@ -1,54 +1,42 @@
-# Sous-titres FR v0.3.2 (extension Chrome)
+# Sous-titres FR (extension Chrome)
 
-Traduit instantanément les sous-titres des vidéos (YouTube et autres sites) en français, en bilingue (original + traduction) ou en traduction seule. Même principe qu'Immersive Translate.
+Traduit **instantanément** les sous-titres des vidéos (YouTube, Tubi et la plupart des sites) en français, en bilingue (original + traduction) ou en traduction seule. Même principe qu'Immersive Translate.
 
-## Installer
-1. Dézippe le dossier `sous-titres-fr`.
-2. Dans Chrome, ouvre `chrome://extensions` et active **Mode développeur** (en haut à droite).
-3. Clique **Charger l'extension non empaquetée** et choisis le dossier `sous-titres-fr`.
-4. Recharge les onglets YouTube déjà ouverts, puis lance une vidéo.
+Testé en conditions réelles sur Tubi (série chinoise sous-titrée en anglais et en espagnol).
 
-Sur YouTube, les sous-titres s'allument tout seuls (désactivable). Ailleurs, active les sous-titres du lecteur.
+## Installer (une seule fois)
+1. Télécharge ce dépôt (bouton vert **Code → Download ZIP**) et dézippe-le.
+2. Dans Chrome, ouvre `chrome://extensions` et active le **Mode développeur** (en haut à droite).
+3. Clique **Charger l'extension non empaquetée** et choisis le dossier.
+4. Lance une vidéo et active ses sous-titres. Sur YouTube, ils s'allument tout seuls.
 
-Pour mettre à jour : remplace les fichiers du dossier, puis clique la flèche ↻ de l'extension dans `chrome://extensions`.
+**Mises à jour automatiques** : quand une nouvelle version est déposée dans le dossier (le fichier `version.txt` change), l'extension se recharge toute seule dans les 30 secondes. Il n'y a plus besoin de passer par `chrome://extensions`.
 
 ## Pourquoi c'est instantané
-1. **Interception** : quand le lecteur télécharge son fichier de sous-titres (YouTube `timedtext`, `.vtt`, `.srt`, TTML), l'extension en garde une copie : toutes les phrases avec leurs horaires.
-2. **Phrases reconstruites** : les sous-titres automatiques YouTube arrivent mot par mot ; ils sont regroupés en vraies phrases (ponctuation, pauses, longueur), ce qui améliore beaucoup la traduction.
-3. **Tout est traduit d'avance** : d'abord les 6 phrases qui arrivent, puis le reste de la vidéo, par lots, avec 6 requêtes en parallèle et un cache.
-4. **Synchro sur l'horloge de la vidéo** : à chaque image, l'extension affiche la phrase correspondant à `currentTime`. Aucun appel réseau pendant la lecture. Avance, retour et vitesse ×2 fonctionnent.
+1. **Interception** : quand le lecteur télécharge son fichier de sous-titres (YouTube `timedtext`, `.srt`, `.vtt`, TTML), l'extension en garde une copie, avec toutes les répliques et leurs horaires.
+2. **Tout est traduit d'avance** : un épisode entier tient en quelques demandes, en commençant par les répliques qui arrivent.
+3. **Synchro sur l'horloge de la vidéo** : la bonne réplique traduite s'affiche à chaque image, sans attendre le réseau.
+4. **Mémoire durable** : un épisode déjà traduit ne redemande plus rien, même après un redémarrage de Chrome.
 
-Sources prises en charge, de la meilleure à la moins bonne :
-- fichier de sous-titres intercepté (YouTube, la plupart des lecteurs) ;
-- pistes `<track>` du navigateur ;
-- repli : lecture du texte affiché à l'écran (petit délai, pour les lecteurs exotiques).
+## Ce que l'extension gère toute seule
+- Les sous-titres d'origine du site sont masqués, et les nôtres prennent leur place exacte. Ils remontent quand les commandes du lecteur apparaissent.
+- **Changement de langue dans le lecteur** (par exemple anglais vers espagnol sur Tubi) : l'extension suit la langue que le site affiche.
+- **Sous-titres coupés dans le lecteur** : la traduction disparaît aussi.
+- **Pubs** : rien ne s'affiche pendant une pub.
+- **Sous-titres automatiques YouTube** (mot par mot) : ils sont regroupés en vraies phrases avant d'être traduits.
+- Chrome Traduction et Immersive Translate ne peuvent pas retraduire notre affichage.
 
-## Traduire avec Claude (plus précis, tient compte du contexte)
-1. Crée une clé API sur https://console.anthropic.com/settings/keys et ajoute un peu de crédit. C'est payant à l'usage.
-2. Ouvre le menu de l'extension, choisis **Traducteur → Claude**, puis colle la clé.
-3. Modèle **Haiku 5.5** (rapide, par défaut) ou **Sonnet 5.5** (plus fin, environ 20 fois plus cher).
+## Traducteurs
+- **Gratuit, par défaut** : Google Traduction, avec relais automatique vers le traducteur de Microsoft Edge si Google limite les demandes. Ce sont des accès gratuits non officiels, qui peuvent changer sans prévenir.
+- **Claude** (option, plus précis, tient compte du contexte) : clé API à créer sur console.anthropic.com. C'est payant à l'usage, environ 1 centime par heure de vidéo avec Haiku 5.5. C'est facturé à part de l'abonnement Claude. Google ou Microsoft affichent tout de suite les premières répliques, puis Claude les remplace au fur et à mesure.
 
-Comment ça se passe :
-- Google traduit tout de suite les premières phrases, pour qu'il n'y ait aucune attente.
-- En parallèle, Claude reçoit le titre de la vidéo et toutes les phrases par paquets de 40, chaque paquet avec les phrases qui le précèdent comme contexte.
-- Chaque phrase de Claude remplace celle de Google dès qu'elle arrive, en général en une ou deux secondes.
-- Claude corrige aussi les erreurs des sous-titres automatiques et garde un ton cohérent (tutoiement, vocabulaire récurrent).
-- Si la clé manque ou est refusée, l'extension repasse sur Google et affiche la raison dans le menu.
-
-Ce que ça coûte, à titre indicatif : une heure de vidéo fait environ 30 000 tokens envoyés et 15 000 reçus. Avec Haiku 5.5 (0,10 $ / 0,50 $ par million), ça fait à peu près 1 centime. Avec Sonnet 5.5 (2 $ / 10 $), environ 20 centimes.
-
-La clé reste dans Chrome, sur ton ordinateur (stockage local non synchronisé). Elle ne sert qu'à appeler api.anthropic.com.
+## Limites
+- Il faut des sous-titres en texte. Sans sous-titres, il faudra de la reconnaissance vocale (prochaine étape).
+- Les sous-titres incrustés dans l'image ne sont pas lus (il faudrait de l'OCR).
+- Safari : la conversion avec `xcrun safari-web-extension-converter` n'a pas encore été testée.
 
 ## Fichiers
 - `inject.js` : capte les fichiers de sous-titres dans la page.
-- `content.js` : découpe, traduction anticipée, synchro et affichage.
-- `background.js` : appels de traduction groupés, en parallèle et en cache.
-- `popup.html/js` : réglages (activer, bilingue, langue, taille, sous-titres YouTube automatiques).
-
-## Limites
-- Il faut des sous-titres en texte. Sans sous-titres, il faudrait de la reconnaissance vocale (prochaine étape possible).
-- Les sous-titres incrustés dans l'image ne sont pas lus (il faudrait de l'OCR).
-- La traduction passe par l'accès gratuit non officiel de Google Traduction. Ça peut ralentir en cas d'usage très intensif.
-
-## Safari
-Sur un Mac avec Xcode : `xcrun safari-web-extension-converter sous-titres-fr`.
+- `content.js` : découpe, traduction anticipée, synchro, affichage, suivi du lecteur.
+- `background.js` : traducteurs (Google, Microsoft, Claude), cache durable, mise à jour automatique.
+- `popup.html/js` : réglages.
