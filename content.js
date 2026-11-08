@@ -7,7 +7,7 @@
   if (window.__stfrLoaded) return;
   window.__stfrLoaded = true;
 
-  const DEFAULTS = { enabled: true, target: 'fr', mode: 'translation', size: 1, autoCC: true, engine: 'google', bg: true };
+  const DEFAULTS = { enabled: true, target: 'fr', mode: 'translation', size: 1, autoCC: true, engine: 'google', bg: true, maxWords: 10, pos: null };
   let settings = { ...DEFAULTS };
   const IS_YT = /(^|\.)(youtube|youtube-nocookie)\.com$/.test(location.hostname);
 
@@ -581,15 +581,159 @@
     return isFinite(d) && d > 0 && last > 120 && d < last * 0.5;
   }
 
+  // ---------------------------------------------------------------- phrases trop longues
+  // Une réplique de plus de « maxWords » mots est découpée en morceaux courts, affichés l'un après
+  // l'autre pendant la durée de la réplique (chacun à proportion de sa longueur) : jamais un gros bloc.
+  const GLUE = /^(le|la|les|l['’]\S*|un|une|des|du|de|d['’]\S*|au|aux|à|a|et|ou|ni|mais|que|qu['’]\S*|qui|ce|cet|cette|ces|mon|ma|mes|ton|ta|tes|son|sa|ses|notre|nos|votre|vos|leur|leurs|en|dans|sur|sous|par|pour|avec|sans|chez|vers|ne|n['’]\S*|se|s['’]\S*|je|j['’]\S*|tu|il|elle|on|nous|vous|ils|elles|y|the|a|an|of|to|and|or|in|on|at|for|with|el|los|las|del|y|que|por|para|con)$/i;
+
+  function splitWords(text, max) {
+    const w = String(text || '').split(/\s+/).filter(Boolean);
+    if (!max || w.length <= max) return [text];
+    const n = Math.ceil(w.length / max);
+    const target = Math.ceil(w.length / n);
+    const parts = [];
+    let cur = [];
+    for (let i = 0; i < w.length; i++) {
+      cur.push(w[i]);
+      const left = w.length - i - 1;
+      const punct = /[,.;:!?…»”)]$/.test(w[i]);
+      // on coupe de préférence après une ponctuation, sinon quand le morceau atteint sa taille cible
+      if (left > 0 && (cur.length >= max || (punct && cur.length >= target - 2 && left >= 3) || (cur.length >= target && parts.length < n - 1))) {
+        // ne jamais finir un morceau sur un petit mot (« des », « de », « et »…) : il part avec le mot suivant
+        const carry = [];
+        while (!punct && cur.length > 2 && GLUE.test(cur[cur.length - 1])) carry.unshift(cur.pop());
+        parts.push(cur.join(' '));
+        cur = carry;
+      }
+    }
+    if (cur.length) {
+      if (cur.length <= 2 && parts.length) parts[parts.length - 1] += ' ' + cur.join(' ');
+      else parts.push(cur.join(' '));
+    }
+    return parts;
+  }
+
+  function pickPart(parts, cue, t) {
+    if (parts.length < 2 || !cue) return parts[0];
+    const total = parts.reduce((a, p) => a + p.length, 0);
+    const frac = Math.min(0.999, Math.max(0, (t - cue.start) / Math.max(0.5, cue.end - cue.start)));
+    let acc = 0;
+    for (const p of parts) {
+      acc += p.length / total;
+      if (frac < acc) return p;
+    }
+    return parts[parts.length - 1];
+  }
+
+  // ---------------------------------------------------------------- sous-titres déplaçables
+  // On clique sur les sous-titres et on les glisse où l'on veut sur la vidéo. La position est gardée
+  // (en % de la vidéo, donc valable aussi en plein écran). Double-clic : retour à la place d'origine.
+  let box = null;
+  let dragPos = null;
+  const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+
+  function getBox(ov) {
+    if (!box) {
+      box = document.createElement('div');
+      box.className = 'stfr-box';
+      box.title = 'Glisser pour déplacer · double-clic pour remettre en place';
+      enableDrag(box);
+    }
+    if (box.parentElement !== ov) ov.appendChild(box);
+    return box;
+  }
+
+  function applyPos() {
+    if (!overlay || !box) return;
+    const p = dragPos || settings.pos;
+    overlay.classList.toggle('stfr-free', !!p);
+    box.style.left = p ? p.x + '%' : '';
+    box.style.top = p ? p.y + '%' : '';
+    if (p) fitInside(p);
+  }
+
+  // la boîte reste toujours entièrement sur la vidéo, même avec une longue réplique
+  function fitInside(p) {
+    if (overlay.style.display === 'none') return;
+    const r = overlay.getBoundingClientRect();
+    const b = box.getBoundingClientRect();
+    if (!r.width || !b.width) return;
+    let dx = 0;
+    let dy = 0;
+    if (b.left < r.left + 4) dx = r.left + 4 - b.left;
+    else if (b.right > r.right - 4) dx = r.right - 4 - b.right;
+    if (b.top < r.top + 4) dy = r.top + 4 - b.top;
+    else if (b.bottom > r.bottom - 4) dy = r.bottom - 4 - b.bottom;
+    if (dx) box.style.left = `calc(${p.x}% + ${Math.round(dx)}px)`;
+    if (dy) box.style.top = `calc(${p.y}% + ${Math.round(dy)}px)`;
+  }
+
+  function enableDrag(b) {
+    // le lecteur ne doit pas recevoir nos clics (sinon pause, plein écran…)
+    for (const ev of ['mousedown', 'mouseup', 'click', 'touchstart', 'touchend', 'pointerup']) {
+      b.addEventListener(ev, (e) => {
+        e.stopPropagation();
+        if (ev === 'click' || ev === 'mousedown') e.preventDefault();
+      });
+    }
+    b.addEventListener('dblclick', (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      dragPos = null;
+      settings.pos = null;
+      try { chrome.storage.sync.set({ pos: null }); } catch (_) {}
+      applyPos();
+    });
+    b.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const br = b.getBoundingClientRect();
+      const offX = e.clientX - (br.left + br.width / 2);
+      const offY = e.clientY - (br.top + br.height / 2);
+      let moved = false;
+      try { b.setPointerCapture(e.pointerId); } catch (_) {}
+      const move = (ev) => {
+        ev.stopPropagation();
+        if (!moved && Math.hypot(ev.clientX - e.clientX, ev.clientY - e.clientY) < 4) return;
+        moved = true;
+        b.classList.add('stfr-dragging');
+        const r = overlay.getBoundingClientRect();
+        dragPos = {
+          x: Math.round(clamp(((ev.clientX - offX - r.left) / r.width) * 100, 8, 92) * 10) / 10,
+          y: Math.round(clamp(((ev.clientY - offY - r.top) / r.height) * 100, 4, 96) * 10) / 10,
+        };
+        applyPos();
+      };
+      const up = () => {
+        b.removeEventListener('pointermove', move);
+        b.removeEventListener('pointerup', up);
+        b.removeEventListener('pointercancel', up);
+        b.classList.remove('stfr-dragging');
+        if (moved && dragPos) {
+          settings.pos = dragPos;
+          try { chrome.storage.sync.set({ pos: dragPos }); } catch (_) {}
+        }
+        dragPos = null;
+        applyPos();
+      };
+      b.addEventListener('pointermove', move);
+      b.addEventListener('pointerup', up);
+      b.addEventListener('pointercancel', up);
+    });
+  }
+
   function render() {
     if (!settings.enabled || !video || !ccOn()) return hideOverlay();
     let orig = '';
     let tr = '';
+    let cue = null;
     if (cues.length) {
       if (looksLikeAd()) return hideOverlay();
       const c = findCue(video.currentTime + 0.05);
       if (c) {
         if (!nativeOn(c)) return hideOverlay();
+        cue = c;
         orig = c.text;
         tr = c.tr || '';
       }
@@ -598,7 +742,13 @@
       tr = live.tr;
     } else return hideOverlay();
 
-    const key = orig + '\u0001' + tr + '\u0001' + settings.mode;
+    // phrase trop longue : on n'affiche que le morceau qui correspond au moment présent
+    const mw = settings.maxWords || 0;
+    const t = video.currentTime + 0.05;
+    const origShow = cue && mw ? pickPart(splitWords(orig, mw), cue, t) : orig;
+    const trShow = cue && mw && tr ? pickPart(splitWords(tr, mw), cue, t) : tr;
+
+    const key = origShow + '\u0001' + trShow + '\u0001' + settings.mode + '\u0001' + JSON.stringify(settings.pos);
     if (key === lastKey) {
       if (overlay && !IS_YT && native.box && (performance.now() - (native.placedAt || 0) > 200)) {
         native.placedAt = performance.now();
@@ -611,31 +761,31 @@
     const ov = getOverlay(video);
     ov.classList.toggle('stfr-nobg', settings.bg === false); // option « sans fond »
     place(video, ov);
-    ov.textContent = '';
+    const b = getBox(ov);
+    applyPos();
+    b.textContent = '';
     if (!orig) {
       ov.style.display = 'none';
       return;
     }
     ov.style.display = '';
-    const box = document.createElement('div');
-    box.className = 'stfr-box';
     const line = (cls, text) => {
       const s = document.createElement('span');
       s.className = 'stfr-line ' + cls;
       s.textContent = text;
-      box.appendChild(s);
+      b.appendChild(s);
     };
     if (settings.mode === 'bilingual') {
-      line('stfr-orig', orig);
-      if (tr && tr !== orig) line('stfr-tr', tr);
+      line('stfr-orig', origShow);
+      if (tr && tr !== orig) line('stfr-tr', trShow);
     } else {
       if (!tr) {
         ov.style.display = 'none'; // traduction seule : jamais d'anglais, même une fraction de seconde
         return;
       }
-      line('stfr-tr', tr);
+      line('stfr-tr', trShow);
     }
-    ov.appendChild(box);
+    applyPos();
   }
 
   function loop() {

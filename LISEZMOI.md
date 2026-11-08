@@ -26,6 +26,8 @@ Testé en conditions réelles sur Tubi (série chinoise sous-titrée en anglais 
 - **Sous-titres automatiques YouTube** (mot par mot) : ils sont regroupés en vraies phrases avant d'être traduits.
 - Chrome Traduction et Immersive Translate ne peuvent pas retraduire notre affichage.
 - **Fond des sous-titres** : avec ou sans fond noir, au choix dans le menu. Sans fond, le texte est blanc avec un contour noir.
+- **Sous-titres déplaçables** : clique dessus et glisse-les où tu veux sur la vidéo. La position est gardée, y compris en plein écran. Un double-clic, ou le bouton du menu, les remet en bas.
+- **Longueur limitée** (10 mots par défaut, réglable de 6 à 14 mots, ou sans limite) : une phrase trop longue est découpée en morceaux courts, affichés l'un après l'autre pendant la réplique. Les petits mots comme « de » ou « la » restent attachés au mot suivant.
 
 ## Traducteurs (au choix dans le menu de l'extension)
 - **Google (par défaut, gratuit)** : Google Traduction, avec relais automatique vers Microsoft Edge si Google limite les demandes.

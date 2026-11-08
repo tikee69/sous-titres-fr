@@ -25,6 +25,30 @@
   align-items: center;
   gap: 0.18em;
   max-width: 88%;
+  pointer-events: auto; /* on peut cliquer dessus pour les déplacer */
+  cursor: grab;
+  border-radius: 6px;
+  outline: 1px dashed transparent;
+  outline-offset: 3px;
+  transition: outline-color 0.15s ease;
+  touch-action: none;
+  user-select: none;
+}
+
+.stfr-box:hover {
+  outline-color: rgba(255, 255, 255, 0.45);
+}
+
+.stfr-box.stfr-dragging {
+  cursor: grabbing;
+  outline-color: rgba(255, 255, 255, 0.8);
+}
+
+/* position choisie par l'utilisateur (glisser-déposer) : centrée sur le point choisi */
+.stfr-free .stfr-box {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  width: max-content;
 }
 
 .stfr-line {

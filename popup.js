@@ -1,4 +1,4 @@
-const DEFAULTS = { enabled: true, target: 'fr', mode: 'translation', size: 1, autoCC: true, engine: 'google', bg: true };
+const DEFAULTS = { enabled: true, target: 'fr', mode: 'translation', size: 1, autoCC: true, engine: 'google', bg: true, maxWords: 10, pos: null };
 const LOCAL = {
   apiKey: '', model: 'claude-haiku-5-5', status: null,
   ollamaUrl: 'http://localhost:11434', ollamaModel: 'hf.co/unsloth/Hy-MT2-7B-GGUF:UD-Q4_K_XL', workContext: '', glossary: '',
@@ -16,6 +16,7 @@ chrome.storage.sync.get(DEFAULTS, (s) => {
   $('enabled').checked = s.enabled;
   $('autoCC').checked = s.autoCC;
   $('bg').checked = s.bg !== false;
+  $('maxWords').value = String(s.maxWords);
   $('target').value = s.target;
   $('mode').value = s.mode;
   $('size').value = String(s.size);
@@ -59,6 +60,12 @@ for (const id of ['target', 'mode', 'engine']) {
   });
 }
 $('size').addEventListener('change', (e) => chrome.storage.sync.set({ size: parseFloat(e.target.value) }));
+$('maxWords').addEventListener('change', (e) => chrome.storage.sync.set({ maxWords: parseInt(e.target.value, 10) }));
+$('resetPos').addEventListener('click', () => {
+  chrome.storage.sync.set({ pos: null });
+  $('resetPos').textContent = 'C\'est fait ✓';
+  setTimeout(() => ($('resetPos').textContent = 'Remettre les sous-titres en bas'), 1500);
+});
 $('model').addEventListener('change', (e) => chrome.storage.local.set({ model: e.target.value, status: null }, retranslate));
 $('apiKey').addEventListener('change', (e) => {
   chrome.storage.local.set({ apiKey: e.target.value.trim(), status: null }, retranslate);
